@@ -2789,3 +2789,58 @@ test_bootstrap_leaves_unauthenticated_checks
 test_custom_snapshot_cleanup_on_signal
 test_returned_custom_check_descendants_are_drained
 test_teardown_removes_poll_artifacts
+
+# --- Azure DevOps provider gate (bin/fm-scm-lib.sh routing) ------------------
+# fm-pr-check routes provider detection through fm_scm_provider_of_url and
+# validates an ADO PR URL with a strict pattern before any state mutation. A
+# well-formed ADO URL is refused (firstmate never completes an ADO PR) and a
+# malformed one gets the generic invalid diagnostic. The detector matches the
+# dev.azure.com / *.visualstudio.com host shape for ANY org, not a specific one.
+test_ado_url_is_gated_and_refused() {
+  local dir before after rc
+  dir=$(make_case ado-gate)
+  write_task_meta "$dir"
+
+  # A well-formed ADO PR URL: refused, exit 1, names Azure DevOps, echoes the
+  # URL, and records no pr= in the task meta.
+  before=$(state_snapshot "$dir/home/state")
+  set +e
+  run_check_entry "$dir" task-a https://dev.azure.com/example-org/ExampleProject/_git/example-repo/pullrequest/42 \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" = 1 ] || fail "ado-gate: a well-formed ADO PR URL should be refused with exit 1 (got $rc)"
+  assert_grep 'Azure DevOps' "$dir/stderr" "ado-gate: refusal should name Azure DevOps"
+  assert_grep 'https://dev.azure.com/example-org/ExampleProject/_git/example-repo/pullrequest/42' \
+    "$dir/stderr" "ado-gate: refusal should echo the PR URL for the captain"
+  assert_no_grep 'pr=' "$dir/home/state/task-a.meta" "ado-gate: no pr= should be recorded for a refused ADO URL"
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "ado-gate: a refused ADO URL changed prior state"
+
+  # A *.visualstudio.com ADO host form is gated identically (any org).
+  set +e
+  run_check_entry "$dir" task-a https://example-org.visualstudio.com/ExampleProject/_git/example-repo/pullrequest/9 \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" = 1 ] || fail "ado-gate: a *.visualstudio.com ADO PR URL should be refused with exit 1 (got $rc)"
+  assert_grep 'Azure DevOps' "$dir/stderr" "ado-gate: visualstudio.com refusal should name Azure DevOps"
+
+  # A malformed ADO-shaped URL (non-numeric PR id) gets the generic invalid
+  # diagnostic and exit 2, not the refusal.
+  before=$(state_snapshot "$dir/home/state")
+  set +e
+  run_check_entry "$dir" task-a https://dev.azure.com/example-org/ExampleProject/_git/example-repo/pullrequest/notanumber \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" = 2 ] || fail "ado-gate: a malformed ADO URL should be rejected with exit 2 (got $rc)"
+  [ "$(cat "$dir/stderr")" = 'error: invalid PR check request' ] \
+    || fail "ado-gate: malformed ADO URL diagnostic was not the generic invalid message"
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "ado-gate: a malformed ADO URL changed prior state"
+
+  pass "fm-pr-check gates ADO PR URLs (any org): refuses well-formed, rejects malformed, leaves state untouched"
+}
+
+test_ado_url_is_gated_and_refused

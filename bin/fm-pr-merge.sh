@@ -116,6 +116,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-scm-lib.sh
+. "$SCRIPT_DIR/fm-scm-lib.sh"
 # shellcheck source=bin/fm-backlog-transition-lib.sh
 . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-merge-outcome-lib.sh
@@ -131,7 +133,25 @@ if [ "$#" -lt 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
+if ! fm_pr_task_id_valid "$ID"; then
+  echo "error: invalid PR merge request" >&2
+  exit 2
+fi
+
+# Provider detection first: an ADO URL must be REFUSED before it reaches the
+# canonical parser (which would reject it as malformed and lose the actionable
+# captain-facing refusal). GitHub and GitLab both continue to the parser below.
+if [ "$(fm_scm_provider_of_url "$RAW_URL")" = ado ]; then
+  # firstmate never merges/completes an Azure DevOps PR (captain policy): ADO
+  # completion is often gated behind required org policies, and the ship path
+  # ends at "gates verified green -> ready". Refuse and point at the ADO UI.
+  echo "error: firstmate does not merge Azure DevOps PRs." >&2
+  echo "The gates are verified green; complete this PR yourself in the Azure DevOps UI: $RAW_URL" >&2
+  echo "Use squash to match GitHub, and do NOT delete the source branch." >&2
+  exit 1
+fi
+
+if ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR merge request" >&2
   exit 2
 fi

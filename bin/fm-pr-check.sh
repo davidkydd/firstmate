@@ -15,6 +15,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-scm-lib.sh
+. "$SCRIPT_DIR/fm-scm-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
@@ -26,7 +28,46 @@ if [ "$#" -ne 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
+if ! fm_pr_task_id_valid "$ID"; then
+  echo "error: invalid PR check request" >&2
+  exit 2
+fi
+
+# Provider is auto-detected from the URL (bin/fm-scm-lib.sh). An Azure DevOps PR
+# URL has a different shape than the GitHub/GitLab canonical form, so it is
+# validated with a strict pattern match here rather than through fm_pr_url_parse
+# (which would reject it as malformed and lose the actionable refusal).
+PROVIDER=$(fm_scm_provider_of_url "$RAW_URL")
+if [ "$PROVIDER" = ado ]; then
+  # Strict ADO PR-URL validation BEFORE any state-mutating side effect, so a
+  # malformed ADO URL is rejected the same way an invalid GitHub URL is.
+  ado_url_valid=1
+  case "$RAW_URL" in
+    https://dev.azure.com/*/_git/*/pullrequest/*) ;;
+    https://*.visualstudio.com/*/_git/*/pullrequest/*) ;;
+    *) ado_url_valid=0 ;;
+  esac
+  case "$RAW_URL" in
+    *[!A-Za-z0-9:/._~%-]*) ado_url_valid=0 ;;
+  esac
+  ado_number=${RAW_URL##*/pullrequest/}
+  case "$ado_number" in
+    ''|*[!0-9]*) ado_url_valid=0 ;;
+  esac
+  if [ "$ado_url_valid" -ne 1 ]; then
+    echo "error: invalid PR check request" >&2
+    exit 2
+  fi
+  # firstmate never completes an Azure DevOps PR (captain policy). The full ADO
+  # merge-watch poll (bin/fm-pr-poll-ado.sh) is a separate feature not present on
+  # this build; a well-formed ADO PR is acknowledged but not armed, and the
+  # captain tracks and completes it in the Azure DevOps UI.
+  echo "error: firstmate does not watch or complete Azure DevOps PRs." >&2
+  echo "Track and complete this PR yourself in the Azure DevOps UI: $RAW_URL" >&2
+  exit 1
+fi
+
+if ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi

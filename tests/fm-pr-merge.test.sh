@@ -3067,6 +3067,35 @@ test_allow_red_refused_on_gitlab() {
   pass "fm-pr-merge refuses --allow-red on GitLab"
 }
 
+# firstmate never merges an Azure DevOps PR: refuse before any recording or
+# host call, and point the captain at the ADO UI. The provider is detected from
+# the URL by bin/fm-scm-lib.sh, so any ADO org/host form is refused, not a
+# specific internal one.
+test_ado_url_refuses_before_any_action() {
+  local case_dir rc
+  case_dir=$(make_case ado-refuse)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" abc123
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://dev.azure.com/example-org/ExampleProject/_git/example-repo/pullrequest/42 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" != 0 ] || fail "ado-refuse: fm-pr-merge should refuse an Azure DevOps PR URL"
+  assert_grep 'does not merge Azure DevOps' "$case_dir/stderr" \
+    "ado-refuse: refusal message should name Azure DevOps"
+  assert_grep 'https://dev.azure.com/example-org/ExampleProject/_git/example-repo/pullrequest/42' "$case_dir/stderr" \
+    "ado-refuse: refusal should echo the PR URL for the captain"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
+    "ado-refuse: no pr= should be recorded for a refused ADO merge"
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "ado-refuse: gh-axi must not be called for an ADO PR URL"
+  pass "fm-pr-merge refuses an Azure DevOps PR URL before recording or calling gh-axi"
+}
+
 test_gitlab_head_override_args_refuse_before_recording
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
@@ -3107,3 +3136,4 @@ test_away_record_cannot_change_between_the_authority_read_and_the_merge
 test_a_grant_revoked_before_the_merge_refuses_it
 test_merge_refuses_when_the_away_record_cannot_be_locked
 test_allow_red_refused_on_gitlab
+test_ado_url_refuses_before_any_action
