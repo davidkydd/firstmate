@@ -4,7 +4,7 @@
     "defaultMode": "bypassPermissions"
   },
   "env": {
-    "ANTHROPIC_MODEL": "github-copilot/gpt-5",
+    "ANTHROPIC_MODEL": "github-copilot/gpt-5.6-sol",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000"
   }
 }
