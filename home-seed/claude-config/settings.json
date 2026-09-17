@@ -1,0 +1,10 @@
+{
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "env": {
+    "ANTHROPIC_MODEL": "github-copilot/gpt-5",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000"
+  }
+}
