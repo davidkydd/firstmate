@@ -39,10 +39,8 @@ async function main() {
   let deadLetterReceiver;
   let resultSubscription;
   let server;
-  let retentionStart;
-  let retentionTimer;
-  let deadLetterStart;
-  let deadLetterTimer;
+  let retentionStopped = false;
+  const retentionTasks = [];
   let enqueueRetryTimer;
   let enqueueRetryRun;
   let enqueueRetryStopped = false;
@@ -202,20 +200,24 @@ async function main() {
         certificateVersion: certificate.version,
       });
     });
-    const reportRetention = () => purgeExpiredRecords().catch(
-      (error) => console.error("Firstmate Teams retention failed", { message: error?.message }),
-    );
-    const reportDeadLetterRetention = () => purgeExpiredDeadLetters().catch(
-      (error) => console.error("Firstmate Teams dead-letter retention failed", { message: error?.message }),
-    );
-    retentionStart = setTimeout(reportRetention, 0);
-    retentionTimer = setInterval(reportRetention, 3_600_000);
-    deadLetterStart = setTimeout(reportDeadLetterRetention, 0);
-    deadLetterTimer = setInterval(reportDeadLetterRetention, 600_000);
-    retentionStart.unref();
-    retentionTimer.unref();
-    deadLetterStart.unref();
-    deadLetterTimer.unref();
+    const scheduleRetention = (name, operation, intervalMilliseconds) => {
+      const task = { timer: undefined, run: undefined };
+      const schedule = (delayMilliseconds) => {
+        task.timer = setTimeout(() => {
+          task.run = operation().catch(
+            (error) => console.error(`Firstmate Teams ${name} retention failed`, { message: error?.message }),
+          ).finally(() => {
+            task.run = undefined;
+            if (!retentionStopped) schedule(intervalMilliseconds);
+          });
+        }, delayMilliseconds);
+        task.timer.unref();
+      };
+      retentionTasks.push(task);
+      schedule(0);
+    };
+    scheduleRetention("record", purgeExpiredRecords, 3_600_000);
+    scheduleRetention("dead-letter", purgeExpiredDeadLetters, 600_000);
 
     await new Promise((resolve, reject) => {
       process.once("SIGTERM", () => {
@@ -230,12 +232,11 @@ async function main() {
     });
   } finally {
     enqueueRetryStopped = true;
+    retentionStopped = true;
     clearTimeout(enqueueRetryTimer);
-    clearTimeout(retentionStart);
-    clearInterval(retentionTimer);
-    clearTimeout(deadLetterStart);
-    clearInterval(deadLetterTimer);
+    for (const task of retentionTasks) clearTimeout(task.timer);
     await enqueueRetryRun;
+    await Promise.all(retentionTasks.map((task) => task.run));
     await resultSubscription?.close().catch(() => {});
     await Promise.allSettled([
       closeServer(server),
