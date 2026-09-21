@@ -86,6 +86,10 @@ export async function startCanvasServer({ bridge, sessionId, log }) {
             }
             const url = new URL(request.url ?? "/", `http://${expectedHost}`);
             if (request.method === "GET" && url.pathname === "/") {
+                if (!constantTimeEqual(url.searchParams.get("t"), token)) {
+                    json(response, 403, { error: "invalid canvas capability" });
+                    return;
+                }
                 const body = page(token);
                 response.writeHead(200, {
                     "Cache-Control": "no-store",
@@ -160,7 +164,7 @@ export async function startCanvasServer({ bridge, sessionId, log }) {
     }
     expectedHost = `127.0.0.1:${address.port}`;
     return {
-        url: `http://${expectedHost}/`,
+        url: `http://${expectedHost}/?t=${token}`,
         close: () => new Promise((resolve) => server.close(resolve)),
     };
 }

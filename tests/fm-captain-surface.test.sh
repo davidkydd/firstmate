@@ -240,7 +240,9 @@ const bridge = {
 const server = await startCanvasServer({ bridge, sessionId: "session-test", log() {} });
 try {
     const canvasUrl = new URL(server.url);
-    if (canvasUrl.search || canvasUrl.hash || canvasUrl.hostname !== "127.0.0.1") process.exit(1);
+    if (!canvasUrl.searchParams.get("t") || canvasUrl.hash || canvasUrl.hostname !== "127.0.0.1") process.exit(1);
+    const tokenless = await fetch(`${canvasUrl.origin}/`);
+    if (tokenless.status !== 403) process.exit(1);
     const pageResponse = await fetch(server.url);
     if (!pageResponse.ok) process.exit(1);
     const html = await pageResponse.text();
@@ -250,17 +252,17 @@ try {
     const origin = new URL(server.url).origin;
     const headers = { "Content-Type": "application/json", "X-Firstmate-Canvas": token };
     const [left, right] = await Promise.all([
-        fetch(`${server.url}api/state`, { headers }),
-        fetch(`${server.url}api/state`, { headers }),
+        fetch(`${origin}/api/state`, { headers }),
+        fetch(`${origin}/api/state`, { headers }),
     ]);
     if (!left.ok || !right.ok) process.exit(1);
-    const rejected = await fetch(`${server.url}api/request`, {
+    const rejected = await fetch(`${origin}/api/request`, {
         method: "POST",
         headers,
         body: JSON.stringify({ text: "missing origin" }),
     });
     if (rejected.status !== 403) process.exit(1);
-    const accepted = await fetch(`${server.url}api/request`, {
+    const accepted = await fetch(`${origin}/api/request`, {
         method: "POST",
         headers: { ...headers, Origin: origin },
         body: JSON.stringify({ text: "direct canvas request" }),

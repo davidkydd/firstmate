@@ -552,9 +552,6 @@ command_ingress() {
   validate_inputs
   validate_outputs
   require_generation "$client" "$generation"
-  if [ "$authority_class" = typed-decision ]; then
-    validate_decision_offer "$payload"
-  fi
   existing=''
   if [ -s "$INPUTS" ]; then
     existing=$(jq -c --arg correlation "$correlation" 'select(.correlation_id == $correlation)' "$INPUTS")
@@ -575,6 +572,9 @@ command_ingress() {
     printf '%s\n' "$seq"
     [ "$notify_rc" -eq 0 ] || die "input $seq was already stored but could not notify Firstmate"
     return 0
+  fi
+  if [ "$authority_class" = typed-decision ]; then
+    validate_decision_offer "$payload"
   fi
   last=$(last_seq "$INPUTS")
   [ "$last" -lt "$MAX_SAFE_SEQ" ] || die "input sequence space is exhausted"
@@ -656,7 +656,7 @@ command_apply() {
   ensure_root
   acquire
   validate_inputs
-  row=$([ -s "$INPUTS" ] && jq -c --argjson seq "$seq" 'select(.seq == $seq)' "$INPUTS")
+  row=$([ -s "$INPUTS" ] && jq -c --argjson seq "$seq" 'select(.seq == $seq)' "$INPUTS" || true)
   [ -n "$row" ] || die "input sequence does not exist: $seq"
   kind=$(printf '%s' "$row" | jq -r '.kind')
   authority=$(printf '%s' "$row" | jq -r '.authority.class')
