@@ -4,6 +4,10 @@
 # Usage:
 #   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix]
 #
+# fm-on.sh automatically adds `--transport-profile devbox-wsl` when the route's
+# primary-local config/remote-transports record selects that profile. The option
+# is an internal diagnostic selector, not a second way to configure a route.
+#
 # Run it through fm-on.sh so the fixed entrypoint invokes this readiness owner
 # over its plain SSH bootstrap. The command reports the same filesystem-composed
 # PATH used by worker jobs while retaining authority to inspect and repair the
@@ -31,6 +35,7 @@
 #   path=<the child PATH this command inherited>
 #   entrypoint=yes|no
 #   platform=darwin|linux|<uname -s>|unknown
+#   transport-profile=devbox-wsl                 (selected profile only)
 #   required <tool>=<path>|MISSING
 #   optional <tool>=<path>|absent
 #   fix <check>=applied: <what changed>       (--fix only)
@@ -81,20 +86,34 @@ LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
 
-usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 MODE=check
-case "${1:-}" in
-  '') ;;
-  --fix) MODE=fix; shift ;;
-  --worker-tool-probe)
-    [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
-    MODE='worker-tool-probe'
-    shift
-    ;;
-  *) usage ;;
-esac
-[ "$#" -eq 0 ] || usage
+TRANSPORT_PROFILE=ssh
+PROFILE_SEEN=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fix)
+      [ "$MODE" = check ] || usage
+      MODE=fix
+      shift
+      ;;
+    --transport-profile)
+      [ "$PROFILE_SEEN" -eq 0 ] && [ "$#" -ge 2 ] || usage
+      [ "$2" = devbox-wsl ] || usage
+      TRANSPORT_PROFILE=$2
+      PROFILE_SEEN=1
+      shift 2
+      ;;
+    --worker-tool-probe)
+      [ "$MODE" = check ] && [ "$PROFILE_SEEN" -eq 0 ] && [ "$#" -eq 1 ] || usage
+      [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
+      MODE='worker-tool-probe'
+      shift
+      ;;
+    *) usage ;;
+  esac
+done
 
 PLATFORM=$(fm_remote_job_platform)
 UID_NUM=$(id -u 2>/dev/null) || UID_NUM=
@@ -718,11 +737,90 @@ check_entrypoint_link() {
     "rerun this command with --fix to create it"
 }
 
+# The route itself proves only prerequisites observable after its SSH stream has
+# landed in Linux. Pool schedules, the Windows Scheduled Task, Hyper-V firewall
+# policy, and the dev-tunnel host process remain operator-owned checks documented
+# in docs/remote-secondmates.md and are deliberately never guessed from here.
+check_devbox_wsl() {
+  local release release_lower pid1 unit='' load_state active enabled
+  [ "$TRANSPORT_PROFILE" = devbox-wsl ] || return 0
+
+  if [ "$PLATFORM" != linux ]; then
+    record devbox-wsl-platform "human: the configured Dev Box route landed on $PLATFORM instead of WSL2 Linux" \
+      "configure the SSH alias to terminate at WSL2's sshd, never at a Windows OpenSSH shell"
+    record devbox-wsl-systemd "skip: WSL2 Linux was not reached"
+    record devbox-wsl-sshd "skip: WSL2 Linux was not reached"
+  else
+    release=$(uname -r 2>/dev/null || true)
+    release_lower=$(printf '%s' "$release" | tr '[:upper:]' '[:lower:]')
+    case "$release_lower" in
+      *microsoft-standard*wsl2*|*microsoft-standard*)
+        record devbox-wsl-platform "ok: WSL2 kernel $release"
+        ;;
+      *microsoft*)
+        record devbox-wsl-platform "human: the Linux endpoint reports Microsoft kernel '$release' but not WSL2" \
+          "install or select a WSL2 distribution and point the SSH alias at that distribution's sshd"
+        record devbox-wsl-systemd "skip: WSL2 was not confirmed"
+        record devbox-wsl-sshd "skip: WSL2 was not confirmed"
+        ;;
+      *)
+        record devbox-wsl-platform "human: the configured Dev Box profile reached Linux kernel '$release', not a confirmed WSL2 endpoint" \
+          "remove the profile for a normal Linux host, or point this Dev Box alias at WSL2's sshd"
+        record devbox-wsl-systemd "skip: WSL2 was not confirmed"
+        record devbox-wsl-sshd "skip: WSL2 was not confirmed"
+        ;;
+    esac
+
+    if check_is_ok devbox-wsl-platform; then
+      pid1=$(ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true)
+      if [ "$pid1" = systemd ] && command -v systemctl >/dev/null 2>&1; then
+        record devbox-wsl-systemd "ok: PID 1 is systemd"
+      else
+        record devbox-wsl-systemd "human: WSL2 is not running systemd as PID 1" \
+          "set [boot] systemd=true in /etc/wsl.conf, run 'wsl.exe --shutdown' from Windows, then restart the distribution"
+      fi
+
+      if check_is_ok devbox-wsl-systemd; then
+        for unit in ssh.service sshd.service; do
+          load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null || true)
+          if [ "$load_state" = loaded ]; then
+            break
+          fi
+          unit=
+        done
+        if [ -z "$unit" ]; then
+          record devbox-wsl-sshd "human: no loaded ssh.service or sshd.service unit is visible in WSL2" \
+            "install the distribution's OpenSSH server package, then enable and start its systemd service"
+        else
+          active=$(systemctl is-active "$unit" 2>/dev/null || true)
+          enabled=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+          if [ "$active" = active ] && [ "$enabled" = enabled ]; then
+            record devbox-wsl-sshd "ok: $unit is active and enabled"
+          else
+            record devbox-wsl-sshd "human: $unit is active=$active and enabled=$enabled" \
+              "enable and start $unit in WSL2 so the endpoint returns after a Dev Box restart"
+          fi
+        fi
+      else
+        record devbox-wsl-sshd "skip: systemd readiness was not confirmed"
+      fi
+    fi
+  fi
+
+  if [ "${FM_REMOTE_DOCTOR_BOOTSTRAP:-}" = 1 ]; then
+    record devbox-wsl-route "ok: the configured SSH route reached Firstmate's fixed entrypoint inside Linux"
+  else
+    record devbox-wsl-route "human: this diagnostic did not arrive through Firstmate's fixed SSH entrypoint" \
+      "run it through 'bin/fm-on.sh <route> fm-remote-doctor.sh' from the primary home"
+  fi
+}
+
 run_checks() { # <resolved-login-shell>
   local shell=$1
   CHECK_NAMES=()
   CHECK_VALUES=()
   CHECK_ACTIONS=()
+  check_devbox_wsl
   check_herdr
   check_gui_session
   check_remote_job_worker
@@ -894,6 +992,9 @@ else
   printf 'note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.\n' >&2
 fi
 printf 'platform=%s\n' "$PLATFORM"
+if [ "$TRANSPORT_PROFILE" != ssh ]; then
+  printf 'transport-profile=%s\n' "$TRANSPORT_PROFILE"
+fi
 
 LAUNCH_AGENT_SHELL=
 if [ "$PLATFORM" = darwin ]; then

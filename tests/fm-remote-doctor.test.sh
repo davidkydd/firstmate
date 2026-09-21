@@ -404,6 +404,7 @@ doctor --fix
 expect_code 1 "$DOCTOR_RC" "--fix reported a host without herdr as ready"
 assert_contains "$DOCTOR_OUT" 'check herdr=human:' "--fix stopped reporting the missing herdr CLI"
 assert_not_contains "$DOCTOR_OUT" 'fix herdr=applied' "--fix claimed to have installed herdr"
+assert_not_contains "$DOCTOR_OUT" 'devbox-wsl-' "an unprofiled macOS route received Dev Box readiness checks"
 assert_no_dangerous_calls "the doctor reached for auto-login, FileVault, or the keychain"
 pass "a missing herdr CLI is a human gap that --fix never claims to close"
 
@@ -777,7 +778,71 @@ expect_code 0 "$DOCTOR_RC" "--fix did not start the herdr server on linux"
 assert_contains "$DOCTOR_OUT" 'fix herdr-server=applied:' "--fix did not report starting the server"
 assert_contains "$DOCTOR_OUT" 'check herdr-server=ok:' "the started server was not confirmed by the re-check"
 [ ! -s "$CASE_LAUNCHCTL_LOG" ] || fail "the linux path invoked launchctl"
+assert_not_contains "$DOCTOR_OUT" 'devbox-wsl-' "an unprofiled Linux route received Dev Box readiness checks"
 pass "a non-darwin host skips launch agents and starts its herdr server directly"
+
+# --- explicit Dev Box/WSL routes prove the Linux-visible prerequisites -------
+
+new_case Linux with-herdr no-gui
+printf 'true\n' > "$CASE_HERDR_RUNNING"
+cat > "$CASE_BIN/uname" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -s|'') printf 'Linux\n' ;;
+  -r) printf '5.15.167.4-microsoft-standard-WSL2\n' ;;
+  *) exit 1 ;;
+esac
+SH
+cat > "$CASE_BIN/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -p ] && [ "${2:-}" = 1 ] && [ "${3:-}" = -o ] && [ "${4:-}" = comm= ]; then
+  if [ -f "$FM_FAKE_STATE/no-systemd" ]; then printf 'init\n'; else printf 'systemd\n'; fi
+  exit 0
+fi
+exec /bin/ps "$@"
+SH
+cat > "$CASE_BIN/systemctl" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}:${2:-}:${4:-}" in
+  show:--property=LoadState:ssh.service) printf 'loaded\n' ;;
+  show:--property=LoadState:sshd.service) printf 'not-found\n' ;;
+  is-active:ssh.service:*) printf 'active\n' ;;
+  is-enabled:ssh.service:*)
+    if [ -f "$FM_FAKE_STATE/sshd-disabled" ]; then printf 'disabled\n'; else printf 'enabled\n'; fi
+    ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$CASE_BIN/uname" "$CASE_BIN/ps" "$CASE_BIN/systemctl"
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+expect_code 0 "$DOCTOR_RC" "a ready WSL2 fixture was rejected"
+assert_contains "$DOCTOR_OUT" 'transport-profile=devbox-wsl' "the selected transport profile was not reported"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-platform=ok: WSL2 kernel 5.15.167.4-microsoft-standard-WSL2' \
+  "the doctor did not confirm the WSL2 kernel"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-systemd=ok: PID 1 is systemd' \
+  "the doctor did not confirm systemd as PID 1"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-sshd=ok: ssh.service is active and enabled' \
+  "the doctor did not confirm persistent sshd readiness"
+assert_contains "$DOCTOR_OUT" "check devbox-wsl-route=ok: the configured SSH route reached Firstmate's fixed entrypoint inside Linux" \
+  "the doctor did not confirm that the forwarded route landed inside Linux"
+pass "the Dev Box profile confirms WSL2, systemd, sshd, and the live forwarded route"
+
+touch "$CASE_STATE/sshd-disabled"
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+expect_code 1 "$DOCTOR_RC" "a WSL2 fixture with disabled sshd was reported ready"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-sshd=human: ssh.service is active=active and enabled=disabled' \
+  "the disabled sshd service did not produce an operator-owned readiness gap"
+assert_contains "$DOCTOR_OUT" 'enable and start ssh.service in WSL2' \
+  "the disabled sshd diagnostic did not include its bounded operator action"
+rm -f "$CASE_STATE/sshd-disabled"
+touch "$CASE_STATE/no-systemd"
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+expect_code 1 "$DOCTOR_RC" "a WSL2 fixture without systemd PID 1 was reported ready"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-systemd=human:' \
+  "the missing systemd prerequisite was not diagnosed"
+assert_contains "$DOCTOR_OUT" 'check devbox-wsl-sshd=skip: systemd readiness was not confirmed' \
+  "sshd readiness was guessed after systemd could not be confirmed"
+pass "the Dev Box doctor reports Linux-visible WSL startup gaps without repairing them"
 
 # --- --fix may add only owned wrappers for version-manager tools -------------
 

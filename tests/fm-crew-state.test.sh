@@ -2243,6 +2243,11 @@ test_remote_unreachable_is_unknown_remote_not_dead() {
   local d out rc
   d=$(setup_remote_case remote-unreachable)
   make_fakebin "$d" >/dev/null
+  mkdir -p "$d/config"
+  cat > "$d/config/remote-transports" <<'EOF'
+schema=fm-remote-transports.v1
+route remote-mac devbox-wsl
+EOF
   printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
   out=$(FM_FAKE_SSH_RC=255 run_remote_crew_state "$d" rsm); rc=$?
   expect_code 0 "$rc" "unreachable remote exits 0"
@@ -2250,7 +2255,7 @@ test_remote_unreachable_is_unknown_remote_not_dead() {
   assert_contains "$out" "not proof of death" "an unreachable remote must not read as dead"
   assert_not_contains "$out" "worktree gone" "an unreachable remote must never read as torn down"
   assert_not_contains "$out" "backend target gone" "an unreachable remote must never read as a dead target"
-  pass "fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead"
+  pass "fm-crew-state remote: an unavailable Dev Box or tunnel reads unknown-remote, never gone or dead"
 }
 
 test_remote_dead_reports_remote_verdict() {

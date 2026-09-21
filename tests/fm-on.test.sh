@@ -184,7 +184,11 @@ DEFAULT_COUNT=$(printf '%s\n' "$LAST_SSH_ARGV" | grep -oE 'ServerAliveCountMax=[
 DEFAULT_WINDOW=$((DEFAULT_INTERVAL * DEFAULT_COUNT))
 [ "$DEFAULT_WINDOW" -le 120 ] \
   || fail "the default dead-peer detection window is not bounded to a sane ceiling (got ${DEFAULT_WINDOW}s = ${DEFAULT_INTERVAL}s x $DEFAULT_COUNT)"
-pass "fm-on arms a bounded SSH dead-peer detection window by default (${DEFAULT_INTERVAL}s x $DEFAULT_COUNT = ${DEFAULT_WINDOW}s)"
+assert_not_contains "$LAST_SSH_ARGV" 'BatchMode=yes' "an unprofiled SSH route received Dev Box batch mode"
+assert_not_contains "$LAST_SSH_ARGV" 'StrictHostKeyChecking=yes' "an unprofiled SSH route received a profile-specific host-key override"
+assert_not_contains "$LAST_SSH_ARGV" 'ConnectTimeout=' "an unprofiled SSH route received a profile-specific connect timeout"
+assert_not_contains "$LAST_SSH_ARGV" 'ConnectionAttempts=' "an unprofiled SSH route received profile-specific connection attempts"
+pass "fm-on leaves the generic SSH route unchanged and arms bounded dead-peer detection (${DEFAULT_INTERVAL}s x $DEFAULT_COUNT = ${DEFAULT_WINDOW}s)"
 
 : > "$SSH_LOG"
 FM_SSH_ALIVE_INTERVAL=7 FM_SSH_ALIVE_COUNT_MAX=2 fm_on ios fm-probe-two.sh >/dev/null
@@ -206,6 +210,69 @@ assert_contains "$INVALID_INTERVAL_OUT" 'FM_SSH_ALIVE_INTERVAL must be a positiv
 assert_contains "$INVALID_COUNT_OUT" 'FM_SSH_ALIVE_COUNT_MAX must be a positive integer' "invalid count did not explain its constraint"
 [ "$(cat "$SSH_COUNT")" -eq "$SSH_CALLS_BEFORE_INVALID" ] || fail "invalid keepalive configuration launched ssh"
 pass "fm-on rejects invalid dead-peer settings before launching ssh"
+
+mkdir -p "$LOCAL_HOME/config"
+cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
+schema=fm-remote-transports.v1
+route another-devbox devbox-wsl
+EOF
+: > "$SSH_LOG"
+fm_on ios fm-probe-two.sh >/dev/null
+UNMATCHED_PROFILE_ARGV=$(tail -n 1 "$SSH_LOG")
+assert_not_contains "$UNMATCHED_PROFILE_ARGV" 'BatchMode=yes' "a profile for another alias changed a generic route"
+assert_not_contains "$UNMATCHED_PROFILE_ARGV" 'ConnectTimeout=' "a profile for another alias changed generic connection behavior"
+pass "a configured Dev Box profile leaves other Linux and macOS SSH aliases unchanged"
+
+cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
+schema=fm-remote-transports.v1
+route remote-mac devbox-wsl
+EOF
+: > "$SSH_LOG"
+fm_on ios fm-probe-two.sh >/dev/null
+DEVBOX_SSH_ARGV=$(tail -n 1 "$SSH_LOG")
+assert_contains "$DEVBOX_SSH_ARGV" 'BatchMode=yes' "the Dev Box profile did not make authentication non-interactive"
+assert_contains "$DEVBOX_SSH_ARGV" 'StrictHostKeyChecking=yes' "the Dev Box profile did not require the pinned host key"
+assert_contains "$DEVBOX_SSH_ARGV" 'ConnectTimeout=10' "the Dev Box profile did not bound connection and handshake setup"
+assert_contains "$DEVBOX_SSH_ARGV" 'ConnectionAttempts=2' "the Dev Box profile did not bound pre-session reconnect attempts"
+assert_contains "$DEVBOX_SSH_ARGV" '-- remote-mac fm-remote-entrypoint.sh' "the Dev Box profile replaced rather than reused the SSH alias"
+pass "the explicit Dev Box profile adds fixed bounded SSH options without replacing the route alias"
+
+set +e
+DEVBOX_DOCTOR_OUT=$(fm_on ios fm-remote-doctor.sh 2>&1)
+DEVBOX_DOCTOR_RC=$?
+set -e
+[ "$DEVBOX_DOCTOR_RC" -ne 0 ] || fail "the non-WSL fixture unexpectedly passed Dev Box diagnostics"
+assert_contains "$DEVBOX_DOCTOR_OUT" 'transport-profile=devbox-wsl' "fm-on did not bind the configured profile to the remote doctor"
+assert_contains "$DEVBOX_DOCTOR_OUT" 'check devbox-wsl-platform=human:' "the Dev Box doctor did not reject a route that missed WSL2"
+pass "the Dev Box profile selects WSL2 readiness diagnostics on the fixed doctor command"
+
+SSH_CALLS_BEFORE_INVALID=$(cat "$SSH_COUNT")
+cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
+schema=fm-remote-transports.v1
+route remote-mac devbox-wsl -oProxyCommand=touch-injected
+EOF
+set +e
+MALFORMED_PROFILE_OUT=$(fm_on ios fm-probe-two.sh 2>&1)
+MALFORMED_PROFILE_RC=$?
+set -e
+[ "$MALFORMED_PROFILE_RC" -ne 0 ] || fail "a transport profile with an injected SSH option was accepted"
+assert_contains "$MALFORMED_PROFILE_OUT" "must be 'route <ssh-alias> devbox-wsl'" "the malformed profile did not report its exact schema"
+[ "$(cat "$SSH_COUNT")" -eq "$SSH_CALLS_BEFORE_INVALID" ] || fail "a malformed transport profile launched ssh"
+
+cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
+schema=fm-remote-transports.v1
+route remote-mac devbox-wsl
+route remote-mac devbox-wsl
+EOF
+set +e
+DUPLICATE_PROFILE_OUT=$(fm_on ios fm-probe-two.sh 2>&1)
+DUPLICATE_PROFILE_RC=$?
+set -e
+[ "$DUPLICATE_PROFILE_RC" -ne 0 ] || fail "duplicate transport-profile bindings were accepted"
+assert_contains "$DUPLICATE_PROFILE_OUT" 'repeats SSH alias remote-mac' "the duplicate profile did not name its conflicting alias"
+[ "$(cat "$SSH_COUNT")" -eq "$SSH_CALLS_BEFORE_INVALID" ] || fail "duplicate transport bindings launched ssh"
+rm -f "$LOCAL_HOME/config/remote-transports"
+pass "transport-profile schema errors refuse before SSH and cannot inject command options"
 
 out=$(TOP_SECRET='must-not-cross' fm_on remote-mac fm-probe-two.sh)
 assert_contains "$out" "home=$REMOTE_HOME" "remote FM_HOME was not explicit"
@@ -252,7 +319,7 @@ expect_dir "$REMOTE_ROOT/bin"
 if [ -d "$ACCOUNT_HOME/.local/bin" ] && [ ! -L "$ACCOUNT_HOME/.local/bin" ]; then
   expect_dir "$ACCOUNT_HOME/.local/bin"
 fi
-for candidate in "${NVM_CHILD_DIRS[@]}"; do expect_dir "$candidate"; done
+for candidate in ${NVM_CHILD_DIRS[@]+"${NVM_CHILD_DIRS[@]}"}; do expect_dir "$candidate"; done
 for candidate in "${MANAGER_DIRS[@]}"; do
   [ -d "$candidate" ] && [ ! -L "$candidate" ] && expect_dir "$candidate"
 done
