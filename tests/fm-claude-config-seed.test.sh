@@ -53,8 +53,8 @@ test_build_injects_credential_and_drops_personal() {
   settings=$(cat "$store/settings.json")
   assert_contains "$settings" "TOK" "the source token must be injected into the store"
   assert_contains "$settings" "https://proxy" "the source endpoint must be injected"
-  jq -e '.env.ANTHROPIC_MODEL == "github-copilot/gpt-5"' "$store/settings.json" >/dev/null \
-    || fail "the fleet-pinned default model (github-copilot/gpt-5) must win over the source ANTHROPIC_MODEL"
+  jq -e '.env.ANTHROPIC_MODEL == "github-copilot/gpt-5.6-sol"' "$store/settings.json" >/dev/null \
+    || fail "the fleet-pinned default model (github-copilot/gpt-5.6-sol) must win over the source ANTHROPIC_MODEL"
   assert_not_contains "$settings" "UserPromptSubmit" "personal hooks must NOT be copied into the store"
   assert_not_contains "$settings" "enabledPlugins" "personal plugins must NOT be copied into the store"
   assert_not_contains "$settings" "statusLine" "personal statusLine must NOT be copied into the store"
@@ -82,7 +82,7 @@ test_doctrine_env_wins() {
   CRED_FILE="$src" run_seed "$store" >/dev/null
   jq -e '.env.FM_SOURCE_ONLY_KEY == "src-only"' "$store/settings.json" >/dev/null \
     || fail "source env keys the doctrine does not set must survive"
-  jq -e '.env.ANTHROPIC_MODEL == "github-copilot/gpt-5"' "$store/settings.json" >/dev/null \
+  jq -e '.env.ANTHROPIC_MODEL == "github-copilot/gpt-5.6-sol"' "$store/settings.json" >/dev/null \
     || fail "doctrine env (the fleet-pinned ANTHROPIC_MODEL) must win over a source ANTHROPIC_MODEL"
   # Prove the precedence rule directly against the seeder's own merge expression
   # (.env = source_env + doctrine_env -> doctrine wins the overlap).
@@ -121,7 +121,7 @@ test_compaction_cap_seeded() {
 }
 
 # --- the fleet default model is seeded and wins over a source model override ---
-# The default-model change: the doctrine pins env.ANTHROPIC_MODEL=github-copilot/gpt-5 so
+# The default-model change: the doctrine pins env.ANTHROPIC_MODEL=github-copilot/gpt-5.6-sol so
 # every seeded store (the primary and every fm-spawn'd claude agent) defaults to
 # it when no explicit --model overrides. ANTHROPIC_MODEL wins over the top-level
 # `model` setting, so this env key is the effective default lever. This proves
@@ -135,17 +135,17 @@ test_default_model_seeded() {
   write_source "$src" '{"ANTHROPIC_AUTH_TOKEN":"TOK"}'
   CRED_FILE="$src" run_seed "$store" >/dev/null
   model=$(jq -r '.env.ANTHROPIC_MODEL // ""' "$store/settings.json")
-  [ "$model" = "github-copilot/gpt-5" ] \
-    || fail "the seeded store must carry the doctrine default model github-copilot/gpt-5 (got '$model')"
+  [ "$model" = "github-copilot/gpt-5.6-sol" ] \
+    || fail "the seeded store must carry the doctrine default model github-copilot/gpt-5.6-sol (got '$model')"
   # b) source pins a different model -> the doctrine default wins.
   src="$TMP_ROOT/model-win/src/settings.json"
   store="$TMP_ROOT/model-win/store"
   write_source "$src" '{"ANTHROPIC_AUTH_TOKEN":"TOK","ANTHROPIC_MODEL":"claude-opus-4.8"}'
   CRED_FILE="$src" run_seed "$store" >/dev/null
   model=$(jq -r '.env.ANTHROPIC_MODEL // ""' "$store/settings.json")
-  [ "$model" = "github-copilot/gpt-5" ] \
+  [ "$model" = "github-copilot/gpt-5.6-sol" ] \
     || fail "the doctrine default model must win over a per-machine source model (got '$model')"
-  pass "the fleet default model github-copilot/gpt-5 is seeded and wins over a source model override"
+  pass "the fleet default model github-copilot/gpt-5.6-sol is seeded and wins over a source model override"
 }
 
 # --- preserve-existing: an existing store is never clobbered ------------------
