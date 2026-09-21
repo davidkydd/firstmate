@@ -1,0 +1,37 @@
+mode=check
+path=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/home/.local/bin:/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin:/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/tools:/usr/bin:/bin:/usr/sbin:/sbin
+entrypoint=no
+note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.
+platform=linux
+transport-profile=devbox-wsl
+subscription=82acd5bb-4206-47d4-9c12-a65db028483d
+required git=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/tools/git
+required jq=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/tools/jq
+required herdr=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin/herdr
+required tasks-axi=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin/tasks-axi
+required treehouse=/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin/treehouse
+required harness=claude:/private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin/claude
+optional tmux=absent
+optional no-mistakes=absent
+optional gh=absent
+check devbox-wsl-platform=ok: WSL2 kernel 5.15.167.4-microsoft-standard-WSL2
+check devbox-wsl-systemd=ok: PID 1 is systemd
+check devbox-wsl-sshd=ok: ssh.service is active and enabled
+check devbox-wsl-route=ok: the configured SSH route reached Firstmate's fixed entrypoint inside Linux
+check devbox-auth-matrix=ok: the host-local identity and permission matrix is valid for subscription 82acd5bb-4206-47d4-9c12-a65db028483d
+check devbox-auth-interactive=ok: staff sign-in is limited to Dev Box User on /subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d/resourceGroups/rg-devbox/providers/Microsoft.DevCenter/projects/nz-sandbox with a Windows-host-local UI profile
+check devbox-auth-app-permissions=ok: interactive consent is Dev Tunnels service sign-in only and the workload identity has no application permissions
+check devbox-auth-workload=human: the isolated Azure CLI profile is not the declared managed or workload identity on subscription 82acd5bb-4206-47d4-9c12-a65db028483d
+check devbox-auth-rbac=skip: the workload identity could not be authenticated
+check herdr=ok: /private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/bin/herdr
+check gui-session=skip: no Aqua login session applies on linux
+check remote-job-worker=ok: the Linux remote job worker is running
+check remote-job-worker-loaded=skip: Aqua launch agents do not apply on linux
+check remote-job-probe=ok: the remote job worker published a fresh heartbeat
+check launchagent=skip: launch agents apply only on darwin
+check launchagent-scope=skip: launch agents apply only on darwin
+check launchagent-loaded=skip: launch agents apply only on darwin
+check herdr-server=ok: session fm-remote is running
+check entrypoint-link=skip: this run did not come through the fixed remote entrypoint
+action: devbox-auth-workload: authenticate the declared identity in /private/var/folders/h5/x71dlrjs5pnbyzpd6b74b5vr0000gn/T/fm-remote-doctor.Qe7Yhm/case1/home/.config/firstmate/azure-workload; never copy or reuse the interactive staff profile
+error: this host is not ready for a remote second mate; unresolved: devbox-auth-workload
