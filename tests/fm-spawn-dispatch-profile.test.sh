@@ -127,7 +127,7 @@ assert_write_boundary_binding() { # <home> <id> <source> <worktree>
   assert_grep "task=$id" "$record" "$id binding task is wrong"
   assert_grep "source=$source" "$record" "$id binding source checkout is wrong"
   assert_grep "worktree=$worktree" "$record" "$id binding worktree is wrong"
-  [ "$(stat -f %Lp "$record" 2>/dev/null || stat -c %a "$record")" = 600 ] \
+  [ "$(stat -c %a "$record" 2>/dev/null || /usr/bin/stat -f %Lp "$record")" = 600 ] \
     || fail "$id write-boundary record is not private"
   token=$(sed -n 's/^token=//p' "$record")
   [[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "$id binding token is not 32 random bytes"

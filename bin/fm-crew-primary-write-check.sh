@@ -136,8 +136,8 @@ RECORD=${FM_CREW_WRITE_BOUNDARY_RECORD:-}
 TOKEN=${FM_CREW_WRITE_BOUNDARY_TOKEN:-}
 [ -n "$RECORD" ] && [ -n "$TOKEN" ] || exit 0
 [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || exit 0
-RECORD_MODE=$(stat -f %Lp "$RECORD" 2>/dev/null || stat -c %a "$RECORD" 2>/dev/null || true)
-RECORD_LINKS=$(stat -f %l "$RECORD" 2>/dev/null || stat -c %h "$RECORD" 2>/dev/null || true)
+RECORD_MODE=$(stat -c %a "$RECORD" 2>/dev/null || /usr/bin/stat -f %Lp "$RECORD" 2>/dev/null || true)
+RECORD_LINKS=$(stat -c %h "$RECORD" 2>/dev/null || /usr/bin/stat -f %l "$RECORD" 2>/dev/null || true)
 [ "$RECORD_MODE" = 600 ] && [ "$RECORD_LINKS" = 1 ] || exit 0
 case "$TOKEN" in *[!0-9a-f]*|'') exit 0 ;; esac
 [ "${#TOKEN}" -eq 64 ] || exit 0
