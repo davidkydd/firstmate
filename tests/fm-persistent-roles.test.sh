@@ -120,6 +120,7 @@ make_role_home() { # <id>
   cp "$ROOT/bin/fm-role-periodic-check.sh" "$ROOT/bin/fm-fleet-lib.sh" \
     "$ROOT/bin/fm-check-register.sh" "$ROOT/bin/fm-check-unregister.sh" \
     "$ROOT/bin/fm-check-lib.sh" "$ROOT/bin/fm-pr-lib.sh" \
+    "$ROOT/bin/fm-lock-lib.sh" \
     "$ROOT/bin/fm-review-watch-triage.sh" "$ROOT/bin/fm-scm-lib.sh" \
     "$ROOT/bin/fm-brief.sh" "$ROOT/bin/fm-spawn.sh" "$home/bin/"
   cp -R "$ROOT/.agents/skills/prreview" "$ROOT/.agents/skills/prbabysit" \
@@ -157,6 +158,46 @@ EOF
   expect_code 0 "$rc" "elapsed-cadence review check"
   assert_contains "$out" 'role-maintenance: prreview' "elapsed cadence did not remind the role"
   pass "persistent roles: periodic review reminder stays silent when empty and is cadence-bounded when active"
+}
+
+arm_active_prreview_home() { # prints home with an armed, active-watch prreview role
+  local home
+  home=$(make_role_home prreview)
+  cat > "$home/data/prreview.md" <<'EOF'
+# Review list
+## Queue
+- https://dev.azure.com/example/project/_git/repo/pullrequest/42 tip=abc reviewed=2026-09-21
+EOF
+  FM_HOME="$home" "$home/bin/fm-role-periodic-check.sh" arm prreview >/dev/null \
+    || fail "could not arm the prreview periodic check"
+  rm -f "$home"/state/.role-periodic-last-* 2>/dev/null || true
+  printf '%s\n' "$home"
+}
+
+test_periodic_check_recovers_from_crashed_lock() {
+  local home lock out rc
+  home=$(arm_active_prreview_home)
+  lock="$home/state/.role-periodic-check.lock"
+  mkdir "$lock" || fail "could not simulate a held periodic lock"
+  touch -t 200001010000 "$lock" || fail "could not backdate the crashed lock"
+  out=$(FM_ROLE_PERIODIC_NOW=100 "$home/state/role-periodic.check.sh" 2>&1); rc=$?
+  expect_code 0 "$rc" "crashed-owner recovery check"
+  assert_contains "$out" 'role-maintenance: prreview' "a crashed-owner stale lock permanently silenced the reminder"
+  assert_absent "$lock" "recovered check did not release the reclaimed lock"
+  pass "persistent roles: a crashed owner's stale periodic lock is reclaimed and the reminder resumes"
+}
+
+test_periodic_check_preserves_live_lock() {
+  local home lock out rc
+  home=$(arm_active_prreview_home)
+  lock="$home/state/.role-periodic-check.lock"
+  mkdir "$lock" || fail "could not simulate a live periodic lock"
+  out=$(FM_ROLE_PERIODIC_NOW=100 "$home/state/role-periodic.check.sh" 2>&1); rc=$?
+  expect_code 0 "$rc" "live-owner concurrency check"
+  [ -z "$out" ] || fail "a live owner's fresh lock was reclaimed and produced concurrent work: $out"
+  assert_present "$lock" "a live owner's fresh lock was removed by a concurrent check"
+  rmdir "$lock" 2>/dev/null || true
+  pass "persistent roles: a fresh lock from a live owner is preserved against concurrent checks"
 }
 
 test_prbabysit_empty_and_active_watch() {
@@ -242,6 +283,8 @@ test_referenced_assets_exist
 test_registry_projection_covers_all_current_roles
 test_policy_negative_paths
 test_periodic_check_is_silent_when_empty_and_due_when_active
+test_periodic_check_recovers_from_crashed_lock
+test_periodic_check_preserves_live_lock
 test_prbabysit_empty_and_active_watch
 test_role_reprovision_uses_authoritative_source
 test_review_restart_reconstruction

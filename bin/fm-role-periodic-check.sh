@@ -17,6 +17,8 @@ export FM_ROOT
 
 # shellcheck source=bin/fm-fleet-lib.sh
 . "$SCRIPT_DIR/fm-fleet-lib.sh"
+# shellcheck source=bin/fm-lock-lib.sh
+. "$SCRIPT_DIR/fm-lock-lib.sh"
 
 shell_quote() {
   printf "'"
@@ -93,7 +95,7 @@ role_arm() { # <id>
 }
 
 role_check() { # <id>
-  local id=$1 cadence watch_rel watch sections marker now last lock
+  local id=$1 cadence watch_rel watch sections marker now last lock ttl age reclaim
   home_valid_for_role "$id" || exit 0
   cadence=$(fm_fleet_periodic_cadence "$id" 2>/dev/null) || exit 0
   watch_rel=$(fm_fleet_periodic_watch_file "$id" 2>/dev/null) || exit 0
@@ -104,7 +106,16 @@ role_check() { # <id>
   marker="$STATE/.role-periodic-last-$id"
   lock="$STATE/.role-periodic-check.lock"
   if ! mkdir "$lock" 2>/dev/null; then
-    exit 0
+    # A live owner's lock dir is sub-second old; only reclaim one whose mtime
+    # age proves its owner died (SIGKILL/power loss) without releasing it.
+    ttl=${FM_ROLE_PERIODIC_LOCK_TTL:-900}
+    case "$ttl" in '' | *[!0-9]*) exit 0 ;; esac
+    age=$(fm_lock_age "$lock" 2>/dev/null) || exit 0
+    [ "$age" -ge "$ttl" ] || exit 0
+    reclaim="$lock.stale.$$"
+    mv -- "$lock" "$reclaim" 2>/dev/null || exit 0
+    rm -rf -- "$reclaim" 2>/dev/null || true
+    mkdir "$lock" 2>/dev/null || exit 0
   fi
   ROLE_PERIODIC_LOCK=$lock
   trap 'rmdir "$ROLE_PERIODIC_LOCK" 2>/dev/null || true' EXIT HUP INT TERM
