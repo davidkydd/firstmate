@@ -838,6 +838,7 @@ test("result worker redacts before cloud persistence", async () => {
       markResultPosted: (...args) => base.markResultPosted(...args),
       markRequestOutcome: (...args) => base.markRequestOutcome(...args),
     },
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: config.allowedConversationIds,
     poster: { async post(value) { posted = value; return "safe-reply"; } },
@@ -858,6 +859,7 @@ test("result worker enforces trusted queue timing before posting", async () => {
   let posts = 0;
   const worker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: config.allowedConversationIds,
     poster: { async post() { posts += 1; return "unexpected"; } },
@@ -891,6 +893,7 @@ test("result worker binds the stored request and exact source activity thread", 
   const result = makeResult(request, "completed", "Finished safely.", { createdAt: NOW.toISOString() });
   const deniedWorker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: new Set(["a:personal-conversation"]),
     poster: { async post(value) { calls.push(value); return "unexpected"; } },
@@ -899,6 +902,7 @@ test("result worker binds the stored request and exact source activity thread", 
   assert.equal(calls.length, 0);
   const revokedWorker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: new Set(),
     allowedConversationIds: config.allowedConversationIds,
     poster: { async post(value) { calls.push(value); return "unexpected"; } },
@@ -907,6 +911,7 @@ test("result worker binds the stored request and exact source activity thread", 
   assert.equal(calls.length, 0);
   const worker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: config.allowedConversationIds,
     poster: { async post(value) { calls.push(value); return "teams-reply-123"; } },
@@ -957,6 +962,7 @@ test("result worker serializes one request while posting unrelated requests conc
   const postsReleased = new Promise((resolve) => { releasePosts = resolve; });
   const worker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: config.allowedConversationIds,
     poster: {
@@ -1004,6 +1010,7 @@ test("posted result redelivery repairs its request outcome without reposting", a
   let posts = 0;
   const worker = new TeamsResultWorker({
     store,
+    tenantId: config.tenantId,
     allowedSenderObjectIds: config.allowedSenderObjectIds,
     allowedConversationIds: config.allowedConversationIds,
     poster: { async post() { posts += 1; return "teams-reply-recovery"; } },

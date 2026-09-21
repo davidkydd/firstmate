@@ -1,3 +1,4 @@
+import { sourceAuthorizationFailure } from "./authorization.mjs";
 import { ContractError, makeResult, MAX_RESULT_BYTES, sameSource, validateRequest } from "./contracts.mjs";
 import { classifyAuthority, redactReply } from "./policy.mjs";
 
@@ -10,14 +11,9 @@ export class ConnectorPolicyError extends Error {
 }
 
 function validateConnectorIdentity(request, config) {
-  if (request.source.tenantId !== config.tenantId) {
-    throw new ConnectorPolicyError("queued request tenant is not authorized");
-  }
-  if (!(config.allowedSenderObjectIds instanceof Set) || !config.allowedSenderObjectIds.has(request.source.senderAadObjectId)) {
-    throw new ConnectorPolicyError("queued request sender is not authorized");
-  }
-  if (!(config.allowedConversationIds instanceof Set) || !config.allowedConversationIds.has(request.source.conversationId)) {
-    throw new ConnectorPolicyError("queued request conversation is not authorized");
+  const authorizationFailure = sourceAuthorizationFailure(request.source, config);
+  if (authorizationFailure) {
+    throw new ConnectorPolicyError(`queued request ${authorizationFailure} is not authorized`);
   }
 }
 

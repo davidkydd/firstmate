@@ -132,6 +132,7 @@ async function main() {
     scheduleEnqueueRetry(0);
     const resultWorker = new TeamsResultWorker({
       store,
+      tenantId: config.tenantId,
       allowedSenderObjectIds: config.allowedSenderObjectIds,
       allowedConversationIds: config.allowedConversationIds,
       maxReplyBytes: config.maxReplyBytes,

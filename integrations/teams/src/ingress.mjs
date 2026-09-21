@@ -1,5 +1,6 @@
-import { bodySha256, ContractError } from "./contracts.mjs";
 import { canonicalGuid, IgnoredActivity, parseTeamsActivity, replyActivity } from "./activity.mjs";
+import { sourceAuthorizationFailure } from "./authorization.mjs";
+import { bodySha256, ContractError } from "./contracts.mjs";
 
 export class TeamsDeliveryError extends Error {
   constructor(error, queueState, { suppressFallbackReply = false } = {}) {
@@ -176,11 +177,13 @@ export class TeamsIngress {
       && typeof context.activity?.from?.id === "string"
       && context.activity.from.id !== this.config.botId
       && context.activity.from.id !== context.activity.recipient.id
-      && candidateTenant === this.config.tenantId
       && (rawConversationTenant === undefined || conversationTenant === candidateTenant)
       && (rawChannelTenant === undefined || channelTenant === candidateTenant)
-      && this.config.allowedSenderObjectIds.has(candidateSender)
-      && this.config.allowedConversationIds.has(candidateConversation);
+      && sourceAuthorizationFailure({
+        tenantId: candidateTenant,
+        senderAadObjectId: candidateSender,
+        conversationId: candidateConversation,
+      }, this.config) === null;
     if (sourceAuthorized) {
       const rateKey = `${candidateTenant}:${candidateSender}`;
       const itemId = String(context.activity?.id || `missing_${bodySha256(String(context.activity?.text || ""))}`);

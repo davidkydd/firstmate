@@ -1,3 +1,4 @@
+import { sourceAuthorizationFailure } from "./authorization.mjs";
 import {
   ContractError,
   makeRequest,
@@ -110,18 +111,16 @@ export function parseTeamsActivity(activity, config, now = new Date()) {
   }
 
   const sourceTenant = tenantId(activity);
-  if (sourceTenant !== config.tenantId) {
-    throw new ContractError("identity", "activity tenant is not authorized");
-  }
   const senderAadObjectId = requiredGuid(activity?.from?.aadObjectId, "sender Entra object id");
-  if (!(config.allowedSenderObjectIds instanceof Set) || !config.allowedSenderObjectIds.has(senderAadObjectId)) {
-    throw new ContractError("identity", "activity sender is not authorized");
-  }
-
   const conversationType = normalizeConversationType(activity);
   const conversationId = requiredString(activity?.conversation?.id, "conversation id", 1024);
-  if (!(config.allowedConversationIds instanceof Set) || !config.allowedConversationIds.has(conversationId)) {
-    throw new ContractError("identity", "activity conversation is not authorized");
+  const authorizationFailure = sourceAuthorizationFailure({
+    tenantId: sourceTenant,
+    senderAadObjectId,
+    conversationId,
+  }, config);
+  if (authorizationFailure) {
+    throw new ContractError("identity", `activity ${authorizationFailure} is not authorized`);
   }
   if (activity.attachments?.length || activity.value !== undefined || activity.suggestedActions) {
     throw new ContractError("rich-content", "attachments, cards, and submitted values are not accepted");

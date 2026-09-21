@@ -1,3 +1,4 @@
+import { sourceAuthorizationFailure } from "./authorization.mjs";
 import { ContractError, sameSource, validateRequest, validateResult } from "./contracts.mjs";
 import { redactReply } from "./policy.mjs";
 
@@ -41,11 +42,10 @@ export function conversationReference(source) {
 }
 
 export class TeamsResultWorker {
-  constructor({ store, poster, allowedSenderObjectIds, allowedConversationIds, maxReplyBytes = 2500 }) {
+  constructor({ store, poster, tenantId, allowedSenderObjectIds, allowedConversationIds, maxReplyBytes = 2500 }) {
     this.store = store;
     this.poster = poster;
-    this.allowedSenderObjectIds = allowedSenderObjectIds;
-    this.allowedConversationIds = allowedConversationIds;
+    this.authorizationPolicy = { tenantId, allowedSenderObjectIds, allowedConversationIds };
     this.maxReplyBytes = maxReplyBytes;
     this.requestRuns = new Map();
   }
@@ -71,11 +71,9 @@ export class TeamsResultWorker {
     if (!sameSource(request.source, result.source)) {
       throw new Error("result source does not match the stored Teams request");
     }
-    if (!(this.allowedSenderObjectIds instanceof Set) || !this.allowedSenderObjectIds.has(result.source.senderAadObjectId)) {
-      throw new Error("result sender is no longer authorized");
-    }
-    if (!(this.allowedConversationIds instanceof Set) || !this.allowedConversationIds.has(result.source.conversationId)) {
-      throw new Error("result conversation is no longer authorized");
+    const authorizationFailure = sourceAuthorizationFailure(result.source, this.authorizationPolicy);
+    if (authorizationFailure) {
+      throw new Error(`result ${authorizationFailure} is no longer authorized`);
     }
     const claim = await this.store.claimResult(result, enqueuedAt);
     if (!claim.created) {

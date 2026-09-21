@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AzureCliCredential } from "@azure/identity";
 import { ServiceBusClient } from "@azure/service-bus";
+import { sourceAuthorizationFailure } from "./authorization.mjs";
 import { connectorConfig } from "./config.mjs";
 import { ConnectorCore } from "./connector-core.mjs";
 import { makeResult, MAX_RESULT_BYTES } from "./contracts.mjs";
@@ -172,9 +173,7 @@ async function publishResult(home, args) {
     await store.assertPrivate();
     const record = await store.get(parsed["request-id"]);
     if (!record?.request) throw new Error("no local Teams request has that request id");
-    if (record.request.source.tenantId !== config.tenantId
-        || !config.allowedSenderObjectIds.has(record.request.source.senderAadObjectId)
-        || !config.allowedConversationIds.has(record.request.source.conversationId)) {
+    if (sourceAuthorizationFailure(record.request.source, config)) {
       throw new Error("local Teams request identity is no longer authorized by configuration");
     }
     const text = await readBoundedText(parsed["text-file"]);
