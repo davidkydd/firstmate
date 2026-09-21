@@ -51,7 +51,7 @@ param certificateName string
 @description('Deploy the externally reachable cloud bot and Azure Bot resource only after rollout approval, app registration, certificate issuance, and image publication.')
 param enableCloudService bool = false
 
-@description('Maximum authentication attempts admitted per minute before JWT verification.')
+@description('Maximum authenticated Bot Framework deliveries admitted per minute.')
 @minValue(10)
 @maxValue(600)
 param authRateLimitPerMinute int = 120

@@ -11,8 +11,8 @@ import { requireChannelServiceActivity } from "./channel-auth.mjs";
 import { cloudConfig } from "./config.mjs";
 import { AzureTableRequestStore } from "./cloud-store.mjs";
 import {
+  AuthenticationAdmissionLimiter,
   deliveryFailureReply,
-  PreAuthRateLimiter,
   reconcilePendingEnqueues,
   shouldSendFailureReply,
   SlidingWindowRateLimiter,
@@ -161,15 +161,24 @@ async function main() {
     }, { autoCompleteMessages: false, maxConcurrentCalls: 8 });
 
     const app = express();
-    const authRateLimiter = new PreAuthRateLimiter({ limit: config.authRateLimitPerMinute });
+    const authenticationAdmission = new AuthenticationAdmissionLimiter({
+      limit: config.authRateLimitPerMinute,
+    });
     const admitAuthentication = (_request, response, next) => {
-      const release = authRateLimiter.acquire();
+      const release = authenticationAdmission.acquire();
       if (!release) {
-        response.set("Retry-After", "60").status(429).json({ error: "too_many_requests" });
+        response.set("Retry-After", "1").status(503).json({ error: "authentication_busy" });
         return;
       }
       response.once("finish", release);
       response.once("close", release);
+      next();
+    };
+    const limitAuthenticatedTraffic = (_request, response, next) => {
+      if (!authenticationAdmission.takeAuthenticated()) {
+        response.set("Retry-After", "60").status(429).json({ error: "too_many_requests" });
+        return;
+      }
       next();
     };
     app.disable("x-powered-by");
@@ -178,6 +187,7 @@ async function main() {
       "/api/messages",
       admitAuthentication,
       (request, response, next) => adapter.authorizeRequest(request, response, next),
+      limitAuthenticatedTraffic,
       express.json({ limit: "64kb", type: "application/json" }),
       requireChannelServiceActivity,
       async (request, response) => {

@@ -307,10 +307,15 @@ export class LocalRequestStore {
     const timestamp = retentionTimestamp(value);
     if (!timestamp) return null;
     const marker = this.expiryPath(kind, id, timestamp);
-    await createJson(marker, {
-      schema: "firstmate.teams.local-expiry.v1",
-      indexedAt: timestamp,
-    });
+    try {
+      await stat(marker);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await createJson(marker, {
+        schema: "firstmate.teams.local-expiry.v1",
+        indexedAt: timestamp,
+      });
+    }
     return marker;
   }
 

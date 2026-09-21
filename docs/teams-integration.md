@@ -111,13 +111,14 @@ It accepts no storage keys, Service Bus connection strings, registry credentials
 | `FM_TEAMS_MAX_ACTIVITY_AGE_SECONDS` | Accepted Teams delivery age, default 900. |
 | `FM_TEAMS_MAX_CLOCK_SKEW_SECONDS` | Future clock tolerance, default 300. |
 | `FM_TEAMS_RATE_LIMIT_PER_MINUTE` | Per-tenant and sender intake limit, default 10. |
-| `FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE` | Global pre-authentication attempt limit, default 120, with at most 16 authentication requests in flight. |
+| `FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE` | Global authenticated Bot Framework delivery limit, default 120; at most 16 authentication requests may be in flight. |
 | `FM_TEAMS_RETENTION_DAYS` | Azure Table correlation retention, including abandoned requests, default 30 and valid from 3 through 365; it must exceed the message retention by more than one day. |
 | `FM_TEAMS_MESSAGE_RETENTION_DAYS` | Active and dead-letter queue delivery window, default 7 and valid from 1 through 14; this full window plus a one-day delivery margin is reserved after the last permitted local result publication. |
 
 The deployment enables the Agents SDK outbound host validator with the SDK's Microsoft host allowlist.
 [`teams-architecture.md`](teams-architecture.md) owns the inbound token and service-origin checks.
-A global pre-authentication admission window bounds JWT verification and signing-key lookups before the per-sender intake limit can apply.
+A pre-authentication concurrency bound limits simultaneous JWT verification and signing-key lookups without letting unauthenticated traffic consume the authenticated delivery quota.
+The authenticated global limit applies only after JWT validation, before the per-sender intake limit.
 The container is fixed at one replica because the in-process rate windows are abuse bounds rather than the durable deduplication authority.
 Azure Table Storage and Service Bus remain the restart-safe authorities.
 

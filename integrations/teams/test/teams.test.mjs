@@ -13,10 +13,11 @@ import { isChannelServiceActivity } from "../src/channel-auth.mjs";
 import { cloudConfig, connectorConfig } from "../src/config.mjs";
 import { ConnectorCore } from "../src/connector-core.mjs";
 import { ContractError, makeResult, validateRequest, validateResult } from "../src/contracts.mjs";
-import { AzureTableRequestStore, MemoryRequestStore } from "../src/cloud-store.mjs";
+import { AzureTableRequestStore } from "../src/cloud-store.mjs";
+import { MemoryRequestStore } from "./support/memory-request-store.mjs";
 import {
+  AuthenticationAdmissionLimiter,
   deliveryFailureReply,
-  PreAuthRateLimiter,
   reconcilePendingEnqueues,
   shouldSendFailureReply,
   SlidingWindowRateLimiter,
@@ -526,18 +527,25 @@ test("duplicate activity retries have a separate bounded allowance", () => {
   assert.equal(limiter.take("tenant:sender", "activity-1", NOW.getTime() + 60_001), true);
 });
 
-test("pre-authentication admission bounds request rate and concurrency globally", () => {
-  const limiter = new PreAuthRateLimiter({ limit: 2, concurrency: 1, windowMilliseconds: 1000 });
-  const releaseFirst = limiter.acquire(1000);
+test("authentication admission bounds concurrency before auth and request rate after auth", () => {
+  const limiter = new AuthenticationAdmissionLimiter({ limit: 2, concurrency: 1, windowMilliseconds: 1000 });
+  const releaseFirst = limiter.acquire();
   assert.equal(typeof releaseFirst, "function");
-  assert.equal(limiter.acquire(1000), null);
+  assert.equal(limiter.acquire(), null);
   releaseFirst();
   releaseFirst();
-  const releaseSecond = limiter.acquire(1001);
-  assert.equal(typeof releaseSecond, "function");
-  releaseSecond();
-  assert.equal(limiter.acquire(1002), null);
-  assert.equal(typeof limiter.acquire(2001), "function");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const release = limiter.acquire();
+    assert.equal(typeof release, "function");
+    release();
+  }
+  assert.equal(limiter.takeAuthenticated(1000), true);
+  assert.equal(limiter.takeAuthenticated(1001), true);
+  for (let attempt = 0; attempt < 10_000; attempt += 1) {
+    assert.equal(limiter.takeAuthenticated(1002), false);
+  }
+  assert.equal(limiter.events.length, 2);
+  assert.equal(limiter.takeAuthenticated(2001), true);
 });
 
 test("per-sender rate limiting rejects excess activities with one throttle notice", async () => {

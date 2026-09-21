@@ -27,20 +27,18 @@ export function deliveryFailureReply(error) {
   return "The request could not be processed. Try again later.";
 }
 
-export class PreAuthRateLimiter {
+export class AuthenticationAdmissionLimiter {
   constructor({ limit, concurrency = 16, windowMilliseconds = 60_000 }) {
     this.limit = limit;
     this.concurrency = concurrency;
     this.windowMilliseconds = windowMilliseconds;
     this.events = [];
+    this.eventHead = 0;
     this.active = 0;
   }
 
-  acquire(nowMilliseconds = Date.now()) {
-    const cutoff = nowMilliseconds - this.windowMilliseconds;
-    this.events = this.events.filter((timestamp) => timestamp > cutoff);
-    if (this.active >= this.concurrency || this.events.length >= this.limit) return null;
-    this.events.push(nowMilliseconds);
+  acquire() {
+    if (this.active >= this.concurrency) return null;
     this.active += 1;
     let active = true;
     return () => {
@@ -48,6 +46,20 @@ export class PreAuthRateLimiter {
       active = false;
       this.active -= 1;
     };
+  }
+
+  takeAuthenticated(nowMilliseconds = Date.now()) {
+    const cutoff = nowMilliseconds - this.windowMilliseconds;
+    while (this.eventHead < this.events.length && this.events[this.eventHead] <= cutoff) {
+      this.eventHead += 1;
+    }
+    if (this.events.length - this.eventHead >= this.limit) return false;
+    this.events.push(nowMilliseconds);
+    if (this.eventHead > 64 && this.eventHead * 2 >= this.events.length) {
+      this.events = this.events.slice(this.eventHead);
+      this.eventHead = 0;
+    }
+    return true;
   }
 }
 
