@@ -1,0 +1,43 @@
+FIRSTMATE PERIODIC ROLE-REMINDER — stale-lock recovery demonstration
+Driving the real bin/fm-role-periodic-check.sh via each role home shim.
+
+------------------------------------------------------------
+SCENARIO 1: crashed owner left a stale lock dir (SIGKILL / power loss)
+  A held .role-periodic-check.lock with an old mtime must be reclaimed
+  so the maintenance reminder RESUMES instead of being silenced forever.
+------------------------------------------------------------
+$ ls -d state/.role-periodic-check.lock   # crashed owner still holds it
+state/.role-periodic-check.lock
+$ FM_ROLE_PERIODIC_NOW=100 state/role-periodic.check.sh
+role-maintenance: prreview has recorded watch work due for a maintenance pass at=100
+(exit 0)
+$ ls -d state/.role-periodic-check.lock   # reclaimed + released after run
+ls: state/.role-periodic-check.lock: No such file or directory
+  (absent — lock released)
+
+=> Reminder resumed AND the reclaimed lock was released.
+
+------------------------------------------------------------
+SCENARIO 2: a LIVE owner holds a fresh lock (concurrent check)
+  A sub-second-old lock must be left in place; the concurrent check must
+  stay silent and must NOT do the owner's work underneath it.
+------------------------------------------------------------
+$ FM_ROLE_PERIODIC_NOW=100 state/role-periodic.check.sh
+(no output — concurrent check yielded to the live owner)
+(exit 0)
+$ ls -d state/.role-periodic-check.lock   # live owner's lock preserved
+state/.role-periodic-check.lock
+
+=> Live owner preserved; no concurrent double-work.
+
+------------------------------------------------------------
+SCENARIO 3: TTL floor — a fresh foreign lock stays untouched until aged
+  Only mtime age >= FM_ROLE_PERIODIC_LOCK_TTL proves a dead owner.
+------------------------------------------------------------
+$ FM_ROLE_PERIODIC_LOCK_TTL=999999999 FM_ROLE_PERIODIC_NOW=100 state/role-periodic.check.sh
+(no output — age below TTL, lock left in place)
+(exit 0)
+$ ls -d state/.role-periodic-check.lock   # not reclaimed under a high TTL
+state/.role-periodic-check.lock
+
+=> A lock younger than the TTL is never reclaimed. Demo complete.
