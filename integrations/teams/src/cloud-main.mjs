@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import express from "express";
 import { unlink } from "node:fs/promises";
-import { CloudAdapter, authorizeJWT } from "@microsoft/agents-hosting";
+import { CloudAdapter } from "@microsoft/agents-hosting";
 import { ManagedIdentityCredential } from "@azure/identity";
 import { ServiceBusClient } from "@azure/service-bus";
 import { TableClient } from "@azure/data-tables";
@@ -162,7 +162,7 @@ async function main() {
     const app = express();
     app.disable("x-powered-by");
     app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
-    app.use(authorizeJWT(authConfig));
+    app.use((request, response, next) => adapter.authorizeRequest(request, response, next));
     app.use(express.json({ limit: "64kb", type: "application/json" }));
     app.post("/api/messages", requireChannelServiceActivity, async (request, response) => {
       await adapter.process(request, response, (context) => ingress.handle(context));

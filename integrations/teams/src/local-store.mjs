@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, link, mkdir, open, opendir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { chmod, link, mkdir, open, opendir, readFile, readdir, rename, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -12,6 +12,15 @@ function safeId(value, name) {
     throw new Error(`${name} is not a safe local record id`);
   }
   return value;
+}
+
+function retentionTimestamp(value) {
+  const timestamp = value.updatedAt || value.queuedAt || value.publishingAt || value.capturedAt;
+  return typeof timestamp === "string" && !Number.isNaN(Date.parse(timestamp)) ? timestamp : null;
+}
+
+function retentionBucket(timestamp) {
+  return new Date(timestamp).toISOString().slice(0, 13);
 }
 
 async function syncDirectory(directory) {
@@ -210,6 +219,9 @@ export class LocalRequestStore {
     this.root = path.join(home, "state", "teams");
     this.requests = path.join(this.root, "requests");
     this.results = path.join(this.root, "results");
+    this.expiry = path.join(this.root, "expiry");
+    this.expiryRequests = path.join(this.expiry, "requests");
+    this.expiryResults = path.join(this.expiry, "results");
     this.purgeDirectories = new Map();
   }
 
@@ -261,9 +273,38 @@ export class LocalRequestStore {
   async ensure() {
     await mkdir(this.requests, { recursive: true, mode: 0o700 });
     await mkdir(this.results, { recursive: true, mode: 0o700 });
-    await chmod(this.root, 0o700);
-    await chmod(this.requests, 0o700);
-    await chmod(this.results, 0o700);
+    await mkdir(this.expiryRequests, { recursive: true, mode: 0o700 });
+    await mkdir(this.expiryResults, { recursive: true, mode: 0o700 });
+    await Promise.all([
+      this.root,
+      this.requests,
+      this.results,
+      this.expiry,
+      this.expiryRequests,
+      this.expiryResults,
+    ].map((directory) => chmod(directory, 0o700)));
+  }
+
+  expiryPath(kind, id, timestamp) {
+    const root = kind === "request" ? this.expiryRequests : this.expiryResults;
+    return path.join(root, retentionBucket(timestamp), `${safeId(id, `${kind} id`)}.json`);
+  }
+
+  async indexRecord(kind, id, value) {
+    const timestamp = retentionTimestamp(value);
+    if (!timestamp) return null;
+    const marker = this.expiryPath(kind, id, timestamp);
+    await createJson(marker, {
+      schema: "firstmate.teams.local-expiry.v1",
+      indexedAt: timestamp,
+    });
+    return marker;
+  }
+
+  async writeRecord(kind, id, value) {
+    await this.indexRecord(kind, id, value);
+    const file = kind === "request" ? this.requestPath(id) : this.resultPath(id);
+    await atomicJson(file, value);
   }
 
   async get(requestId) {
@@ -303,6 +344,7 @@ export class LocalRequestStore {
         }
         return { created: false, record: existing };
       }
+      await this.indexRecord("request", request.requestId, record);
       if (await createJson(file, record)) return { created: true, record };
     }
     throw new Error("could not reconcile the local Teams request record");
@@ -324,7 +366,7 @@ export class LocalRequestStore {
           }
         : fields;
       const updated = { ...record, ...nextFields, updatedAt: new Date().toISOString() };
-      await atomicJson(this.requestPath(requestId), updated);
+      await this.writeRecord("request", requestId, updated);
       return updated;
     });
   }
@@ -358,7 +400,7 @@ export class LocalRequestStore {
           terminalResultId: candidate.resultId,
           updatedAt: new Date().toISOString(),
         };
-        await atomicJson(this.requestPath(candidate.requestId), requestRecord);
+        await this.writeRecord("request", candidate.requestId, requestRecord);
       }
       const file = this.resultPath(candidate.resultId);
       let resultRecord;
@@ -383,12 +425,12 @@ export class LocalRequestStore {
             ...(stored.terminal ? { terminalResultId: stored.resultId } : {}),
             updatedAt: new Date().toISOString(),
           };
-          await atomicJson(this.requestPath(candidate.requestId), updated);
+          await this.writeRecord("request", candidate.requestId, updated);
           return { queued: false, result: stored };
         }
         candidate = stored;
       } else {
-        await atomicJson(file, {
+        await this.writeRecord("result", candidate.resultId, {
           schema: "firstmate.teams.local-result.v1",
           state: "publishing",
           result: candidate,
@@ -396,7 +438,7 @@ export class LocalRequestStore {
         });
       }
       await send(candidate);
-      await atomicJson(file, {
+      await this.writeRecord("result", candidate.resultId, {
         schema: "firstmate.teams.local-result.v1",
         state: "queued",
         result: candidate,
@@ -409,7 +451,7 @@ export class LocalRequestStore {
         ...(candidate.terminal ? { terminalResultId: candidate.resultId } : {}),
         updatedAt: new Date().toISOString(),
       };
-      await atomicJson(this.requestPath(candidate.requestId), updated);
+      await this.writeRecord("request", candidate.requestId, updated);
       return { queued: true, result: candidate };
     });
   }
@@ -420,74 +462,149 @@ export class LocalRequestStore {
       try {
         handle = await opendir(directory);
       } catch (error) {
-        if (error?.code === "ENOENT") return [];
+        if (error?.code === "ENOENT") return { names: [], exhausted: true, inspected: 0 };
         throw error;
       }
       this.purgeDirectories.set(directory, handle);
     }
-    const entries = [];
-    for (let inspected = 0; inspected < scanLimit; inspected += 1) {
+    const names = [];
+    let exhausted = false;
+    let inspected = 0;
+    for (; inspected < scanLimit; inspected += 1) {
       const entry = await handle.read();
       if (!entry) {
         await handle.close().catch(() => {});
         this.purgeDirectories.delete(directory);
+        exhausted = true;
         break;
       }
-      if (entry.isFile() && /^[a-z0-9_]{10,100}\.json$/.test(entry.name)) entries.push(entry.name);
+      if (entry.isFile() && /^[a-z0-9_]{10,100}\.json$/.test(entry.name)) names.push(entry.name);
     }
-    return entries;
+    return { names, exhausted, inspected };
+  }
+
+  async readRecord(file) {
+    try {
+      return JSON.parse(await readFile(file, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+      return null;
+    }
+  }
+
+  async migrateExpiryIndex(kind, scanLimit) {
+    const directory = kind === "request" ? this.requests : this.results;
+    const complete = path.join(this.expiry, `.${kind}s-indexed`);
+    try {
+      await stat(complete);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const { names, exhausted } = await this.nextPurgeEntries(directory, scanLimit);
+    for (let offset = 0; offset < names.length; offset += 32) {
+      await Promise.all(names.slice(offset, offset + 32).map(async (name) => {
+        const value = await this.readRecord(path.join(directory, name));
+        if (value) await this.indexRecord(kind, name.slice(0, -5), value);
+      }));
+    }
+    if (exhausted) {
+      await atomicJson(complete, {
+        schema: "firstmate.teams.local-expiry-migration.v1",
+        completedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  async expiryPartitions(root, cutoffBucket) {
+    try {
+      return (await readdir(root, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(entry.name)
+          && entry.name <= cutoffBucket)
+        .map((entry) => entry.name)
+        .sort();
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async purgeIndexedKind(kind, cutoffMilliseconds, limit, scanLimit) {
+    const indexRoot = kind === "request" ? this.expiryRequests : this.expiryResults;
+    const recordRoot = kind === "request" ? this.requests : this.results;
+    const partitions = await this.expiryPartitions(indexRoot, retentionBucket(cutoffMilliseconds));
+    let inspected = 0;
+    let removed = 0;
+    for (const partition of partitions) {
+      if (inspected >= scanLimit || removed >= limit) break;
+      const directory = path.join(indexRoot, partition);
+      const entries = await this.nextPurgeEntries(directory, scanLimit - inspected);
+      inspected += entries.inspected;
+      for (const name of entries.names) {
+        if (removed >= limit) break;
+        const id = name.slice(0, -5);
+        const marker = path.join(directory, name);
+        const file = path.join(recordRoot, name);
+        const initial = await this.readRecord(file);
+        const removeMarker = () => unlink(marker).catch((error) => {
+          if (error?.code !== "ENOENT") throw error;
+        });
+        const reconcile = async () => {
+          const current = await this.readRecord(file);
+          if (!current) {
+            await removeMarker();
+            return 0;
+          }
+          const timestamp = retentionTimestamp(current);
+          if (!timestamp || Date.parse(timestamp) >= cutoffMilliseconds) {
+            const currentMarker = timestamp ? await this.indexRecord(kind, id, current) : null;
+            if (currentMarker !== marker) await removeMarker();
+            return 0;
+          }
+          await unlink(file);
+          await removeMarker();
+          return 1;
+        };
+        if (kind === "request") {
+          removed += await this.withRequestLock(id, reconcile);
+        } else if (initial?.result?.requestId) {
+          removed += await this.withRequestLock(initial.result.requestId, reconcile);
+        } else {
+          removed += await reconcile();
+        }
+      }
+      if (entries.exhausted) await rmdir(directory).catch((error) => {
+        if (error?.code !== "ENOENT" && error?.code !== "ENOTEMPTY") throw error;
+      });
+    }
+    return removed;
   }
 
   async purgeBefore(cutoff, limit = 1000, scanLimit = 5000) {
     const cutoffMilliseconds = cutoff.getTime();
-    const expired = (value) => {
-      const timestamp = value.updatedAt || value.queuedAt || value.publishingAt || value.capturedAt;
-      return typeof timestamp === "string" && Date.parse(timestamp) < cutoffMilliseconds;
-    };
-    const readRecord = async (file) => {
-      try {
-        return JSON.parse(await readFile(file, "utf8"));
-      } catch (error) {
-        if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
-        return null;
-      }
-    };
+    if (!Number.isFinite(cutoffMilliseconds)) throw new Error("retention cutoff must be a valid date");
+    await this.ensure();
+    await Promise.all([
+      this.migrateExpiryIndex("request", scanLimit),
+      this.migrateExpiryIndex("result", scanLimit),
+    ]);
     let removed = 0;
-    const directories = [this.requests, this.results];
-    for (let directoryIndex = 0; directoryIndex < directories.length; directoryIndex += 1) {
-      const directory = directories[directoryIndex];
-      const directoryLimit = Math.floor(limit / directories.length)
-        + (directoryIndex < limit % directories.length ? 1 : 0);
-      let directoryRemoved = 0;
-      const names = await this.nextPurgeEntries(directory, scanLimit);
-      for (let offset = 0; offset < names.length && directoryRemoved < directoryLimit; offset += 32) {
-        const batch = names.slice(offset, offset + Math.min(32, directoryLimit - directoryRemoved));
-        directoryRemoved += (await Promise.all(batch.map(async (name) => {
-          const file = path.join(directory, name);
-          const initial = await readRecord(file);
-          if (!initial || !expired(initial)) return 0;
-          const removeIfStillExpired = async () => {
-            const current = await readRecord(file);
-            if (!current || !expired(current)) return 0;
-            await unlink(file);
-            return 1;
-          };
-          if (directory === this.requests) {
-            return this.withRequestLock(name.slice(0, -5), removeIfStillExpired);
-          }
-          if (initial.state === "publishing" && initial.result?.requestId) {
-            return this.withRequestLock(initial.result.requestId, removeIfStillExpired);
-          }
-          return removeIfStillExpired();
-        }))).reduce((sum, value) => sum + value, 0);
-      }
-      removed += directoryRemoved;
+    for (const [index, kind] of ["request", "result"].entries()) {
+      const kindLimit = Math.floor(limit / 2) + (index < limit % 2 ? 1 : 0);
+      removed += await this.purgeIndexedKind(kind, cutoffMilliseconds, kindLimit, scanLimit);
     }
     return removed;
   }
 
   async assertPrivate() {
-    for (const directory of [this.root, this.requests, this.results]) {
+    for (const directory of [
+      this.root,
+      this.requests,
+      this.results,
+      this.expiry,
+      this.expiryRequests,
+      this.expiryResults,
+    ]) {
       try {
         const info = await stat(directory);
         if (!info.isDirectory() || (info.mode & 0o077) !== 0) {

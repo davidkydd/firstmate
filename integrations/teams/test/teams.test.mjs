@@ -1131,11 +1131,30 @@ test("configured retention removes terminal and stranded local records", async (
   const publishingResultRecord = JSON.parse(await readFile(store.resultPath(publishingResult.resultId), "utf8"));
   await writeFile(store.resultPath(publishingResult.resultId), `${JSON.stringify({ ...publishingResultRecord, publishingAt: "2020-01-01T00:00:00.000Z" })}\n`);
 
-  assert.equal(await store.purgeBefore(NOW), 5);
+  const futureCutoff = new Date(Date.now() + 3_600_000);
+  assert.equal(await store.purgeBefore(futureCutoff), 5);
   assert.equal(await store.get(request.requestId), null);
   assert.equal(await store.get(abandoned.requestId), null);
   assert.equal(await store.get(publishingRequest.requestId), null);
   await assert.rejects(readFile(store.resultPath(publishingResult.resultId)), (error) => error.code === "ENOENT");
+});
+
+test("local retention skips records outside due index partitions", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-retention-index-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const request = parseTeamsActivity(await fixture("personal-request.json"), config, NOW);
+  const store = new LocalRequestStore(home);
+  await store.capture(request);
+  const oldCutoff = new Date("2000-01-01T00:00:00.000Z");
+  assert.equal(await store.purgeBefore(oldCutoff), 0);
+  let recordReads = 0;
+  const readRecord = store.readRecord.bind(store);
+  store.readRecord = async (...args) => {
+    recordReads += 1;
+    return readRecord(...args);
+  };
+  assert.equal(await store.purgeBefore(oldCutoff), 0);
+  assert.equal(recordReads, 0);
 });
 
 test("local retention reserves deletion capacity for results", async (t) => {

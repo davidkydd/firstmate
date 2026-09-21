@@ -237,8 +237,77 @@ cmd_note() {
   queue_note text "$body"
 }
 
+external_wake_queued_locked() {
+  local kind=$1 key=$2
+  awk -F '\t' -v kind="$kind" -v key="$key" \
+    '$3 == kind && $4 == key { found = 1; exit } END { exit !found }' "$FM_WAKE_QUEUE" 2>/dev/null
+}
+
+external_note_mutate_locked() {
+  local source=$1 dedupe_key=$2 body=$3 id=$4 note=$5 wake_key=$6 summary=$7
+  local handled_note status=0 release_status=0 tmp='' created=0 wake_locked=0
+  EXTERNAL_NOTE_OUTCOME=queued
+  EXTERNAL_NOTE_ERROR=durable
+  if ! fm_lock_acquire_wait "$INBOX_LOCK"; then
+    EXTERNAL_NOTE_ERROR=inbox-lock
+    return 1
+  fi
+
+  if handled_note=$(handled_external_note "$source" "$id"); then
+    if [ "$(sed -n '/^--$/,$p' "$handled_note" | tail -n +2)" != "$body" ]; then
+      EXTERNAL_NOTE_ERROR=reused
+      status=1
+    else
+      EXTERNAL_NOTE_OUTCOME=already-queued
+    fi
+  elif [ -f "$note" ] \
+      && [ "$(sed -n '/^--$/,$p' "$note" | tail -n +2)" != "$body" ]; then
+    EXTERNAL_NOTE_ERROR=reused
+    status=1
+  else
+    if [ ! -f "$note" ]; then
+      tmp=$(mktemp "$INBOX/.staging-XXXXXX") || status=$?
+      [ "$status" -ne 0 ] \
+        || write_note_record "$tmp" "$id" "$source" "$body" "external_id=$dedupe_key" || status=$?
+      if [ "$status" -eq 0 ]; then
+        if mv "$tmp" "$note"; then
+          created=1
+        else
+          status=$?
+          rm -f "$tmp" 2>/dev/null || true
+        fi
+      else
+        rm -f "$tmp" 2>/dev/null || true
+      fi
+    fi
+    if [ "$status" -eq 0 ]; then
+      if fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; then
+        wake_locked=1
+      else
+        status=$?
+      fi
+    fi
+    if [ "$status" -eq 0 ]; then
+      { : >> "$FM_WAKE_QUEUE" && chmod 0600 "$FM_WAKE_QUEUE"; } || status=$?
+    fi
+    if [ "$status" -eq 0 ] && { [ "$created" -eq 1 ] \
+        || ! external_wake_queued_locked check "$wake_key"; }; then
+      fm_wake_append_locked check "$wake_key" "$(wake_payload "$id" "$summary")" || status=$?
+    fi
+  fi
+
+  if [ "$wake_locked" -eq 1 ]; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK" || release_status=$?
+    [ "$status" -ne 0 ] || status=$release_status
+  fi
+  release_status=0
+  fm_lock_release "$INBOX_LOCK" || release_status=$?
+  [ "$status" -ne 0 ] || status=$release_status
+  return "$status"
+}
+
 cmd_external_note() {
-  local source=${1:-} dedupe_key=${2:-} input=${3:-} body id note wake_key summary lib handled_note status=0 tmp created=0 wake_locked=0
+  local source=${1:-} dedupe_key=${2:-} input=${3:-} body id note wake_key summary lib status
   [ "$#" -eq 3 ] && [ "$input" = "-" ] \
     || die "usage: fm-inbox.sh external-note <source> <dedupe-key> -"
   case "$source" in ''|*[!a-z0-9-]*|?????????????????????????????????*) die "invalid external-note source" ;; esac
@@ -260,58 +329,18 @@ cmd_external_note() {
   [ -r "$lib" ] || die "missing $lib"
   # shellcheck source=/dev/null
   FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" STATE="$STATE" . "$lib"
-  fm_lock_acquire_wait "$INBOX_LOCK" || die "could not lock the inbox"
 
-  if handled_note=$(handled_external_note "$source" "$id"); then
-    if [ "$(sed -n '/^--$/,$p' "$handled_note" | tail -n +2)" != "$body" ]; then
-      fm_lock_release "$INBOX_LOCK"
-      die "external note key was reused with different content: $dedupe_key"
-    fi
-    fm_lock_release "$INBOX_LOCK"
-    printf 'already-queued %s\n' "$id"
+  if external_note_mutate_locked "$source" "$dedupe_key" "$body" "$id" "$note" "$wake_key" "$summary"; then
+    printf '%s %s\n' "$EXTERNAL_NOTE_OUTCOME" "$id"
     return 0
+  else
+    status=$?
   fi
-  if [ -f "$note" ] \
-      && [ "$(sed -n '/^--$/,$p' "$note" | tail -n +2)" != "$body" ]; then
-    fm_lock_release "$INBOX_LOCK"
-    die "external note key was reused with different content: $dedupe_key"
-  fi
-  if [ ! -f "$note" ]; then
-    tmp=$(mktemp "$INBOX/.staging-XXXXXX") || status=$?
-    if [ "$status" -eq 0 ]; then
-      write_note_record "$tmp" "$id" "$source" "$body" "external_id=$dedupe_key" || status=$?
-    fi
-    if [ "$status" -eq 0 ]; then
-      if mv "$tmp" "$note"; then
-        created=1
-      else
-        status=$?
-        rm -f "$tmp" 2>/dev/null || true
-      fi
-    else
-      rm -f "${tmp:-}" 2>/dev/null || true
-    fi
-  fi
-  if [ "$status" -eq 0 ]; then
-    if fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; then
-      wake_locked=1
-    else
-      status=$?
-    fi
-  fi
-  if [ "$status" -eq 0 ]; then
-    { : >> "$FM_WAKE_QUEUE" && chmod 0600 "$FM_WAKE_QUEUE"; } || status=$?
-  fi
-  if [ "$status" -eq 0 ] && [ "$created" -eq 1 ]; then
-    fm_wake_append_locked check "$wake_key" "$(wake_payload "$id" "$summary")" || status=$?
-  elif [ "$status" -eq 0 ] \
-      && ! fm_wake_queued_keys_locked check | grep -Fqx "$wake_key"; then
-    fm_wake_append_locked check "$wake_key" "$(wake_payload "$id" "$summary")" || status=$?
-  fi
-  [ "$wake_locked" -eq 0 ] || fm_lock_release "$FM_WAKE_QUEUE_LOCK" || status=$?
-  fm_lock_release "$INBOX_LOCK" || status=$?
-  [ "$status" -eq 0 ] || die "external note $id was not durably announced"
-  printf 'queued %s\n' "$id"
+  case "$EXTERNAL_NOTE_ERROR" in
+    reused) die "external note key was reused with different content: $dedupe_key" ;;
+    inbox-lock) die "could not lock the inbox" ;;
+    *) die "external note $id was not durably announced" ;;
+  esac
 }
 
 cmd_purge_external_handled() {
