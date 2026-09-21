@@ -1,0 +1,10 @@
+**
+!integrations/
+integrations/*
+!integrations/teams/
+integrations/teams/*
+!integrations/teams/Dockerfile
+!integrations/teams/package.json
+!integrations/teams/package-lock.json
+!integrations/teams/src/
+!integrations/teams/src/**

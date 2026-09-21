@@ -31,7 +31,8 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/remote-secondmates.md",
+    "docs/teams-integration.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -253,6 +254,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/teams-respond/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/updatefirstmate/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -427,6 +432,14 @@
     {
       "path": "docs/supervision-protocols/unknown.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/teams-architecture.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "docs/teams-integration.md",
+      "audience": "operator-current"
     },
     {
       "path": "docs/tmux-backend.md",

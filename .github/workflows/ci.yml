@@ -47,6 +47,24 @@ jobs:
       # fails locally before merge.
       - run: bin/fm-lint.sh
 
+  teams-integration:
+    name: Microsoft Teams integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Teams integration dependencies
+        working-directory: integrations/teams
+        run: npm ci --ignore-scripts
+      - name: Verify dependency audit and fixture contracts
+        working-directory: integrations/teams
+        run: |
+          npm audit --omit=dev
+          npm test
+          node -e "import('@microsoft/agents-hosting').then(module => { if (!module.CloudAdapter || !module.authorizeJWT) process.exit(1) })"
+      - name: Compile the Azure template
+        run: az bicep build --file integrations/teams/infra/main.bicep --stdout >/dev/null
+
   # Deterministic proof that portable parallel shards + portable serial + Herdr
   # equal the complete tests/*.test.sh inventory with no missing or duplicates,
   # and that the portable serial CI shards partition that serial lane exactly.

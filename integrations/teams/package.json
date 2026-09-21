@@ -1,0 +1,23 @@
+{
+  "name": "@firstmate/teams-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/cloud-main.mjs",
+    "connector": "node src/connector-main.mjs serve",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.1",
+    "@azure/identity": "^4.13.0",
+    "@azure/keyvault-secrets": "^4.10.0",
+    "@azure/service-bus": "^7.9.5",
+    "@microsoft/agents-hosting": "^1.8.1",
+    "express": "^5.1.0",
+    "long": "^5.2.0"
+  }
+}

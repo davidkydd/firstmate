@@ -562,6 +562,13 @@ The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the 
 So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Microsoft Teams connector (config/teams.json)
+
+The optional single-tenant Teams integration is disabled unless an owner-only `config/teams.json` contains `enabled: true` and the complete `firstmate.teams.config.v1` shape.
+[`docs/teams-integration.md`](teams-integration.md) is the single owner of its local and cloud configuration, formal rollout, certificate rotation, monitoring, privacy, retention, and rollback contract.
+[`docs/teams-architecture.md`](teams-architecture.md) owns its typed queue protocol, identity binding, durability, authority, and reply-correlation design.
+The connector is not inherited into secondmate homes.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.

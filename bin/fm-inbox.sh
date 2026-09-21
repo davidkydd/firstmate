@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # fm-inbox.sh - the captain's out-of-band capture surface.
 #
-# Solves three DIFFERENT problems with three different mechanisms, because they
+# Solves four DIFFERENT problems with four different mechanisms, because they
 # are not the same problem:
 #
 #   note    Queue an idea for firstmate while firstmate is mid-turn and cannot
 #           answer. Writes a durable record and appends ONE `check` wake, so the
 #           note survives a crash and is presented at firstmate's next drain.
-#           This is the only subcommand that touches firstmate's wake queue.
+#   external-note
+#           Idempotently publish one item from a trusted external-transport
+#           adapter. The adapter owns source and payload validation; this command
+#           binds its source and opaque deduplication key to one deterministic
+#           note while still writing and waking only through this inbox owner.
+#           `note` (including `say`) and `external-note` are the only paths that
+#           append to firstmate's wake queue.
 #   say     Same as `note`, but the body comes from spoken audio on stdin.
 #           Speech is an INPUT METHOD here, not an architecture: it transcribes
 #           and then takes exactly the `note` path.
@@ -20,6 +26,8 @@
 #
 # Usage:
 #   fm-inbox.sh note <text>...          | fm-inbox.sh note -   (body from stdin)
+#   fm-inbox.sh external-note <source> <dedupe-key> -           (body from stdin)
+#   fm-inbox.sh purge-external-handled <source> <retention-days> [limit]
 #   fm-inbox.sh say  [<file.wav>]       (default: audio on stdin)
 #   fm-inbox.sh status
 #   fm-inbox.sh ask  <question>...
@@ -41,15 +49,17 @@
 # An absent profile means the call uses whatever credentials are already in the
 # environment, which is also what FM_INBOX_PROFILE= (empty) forces.
 #
-# `note`, `status`, `list` and `drain` need NO configuration at all, because they
-# make no model call. The voice handover depends on `note`, so it keeps working in
-# a home that has configured nothing.
+# `note`, `external-note`, `purge-external-handled`, `status`, `list`, and
+# `drain` need NO configuration at all, because they make no model call. The
+# voice handover depends on `note`, so it keeps working in a home that has
+# configured nothing.
 #
 # Environment:
 #   FM_HOME              operational home whose state/ and data/ are used.
 #
 # PRIVACY: `say` sends your audio and `ask` sends your question to Bedrock.
-# `note`, `status`, `list` and `drain` make no network call at all.
+# `note`, `external-note`, `purge-external-handled`, `status`, `list`, and
+# `drain` make no network call at all.
 #
 # `note` is also the queueing half of the spoken interface: when the voice agent
 # in bin/fm-voice-relay.py hands real work over to firstmate, it runs this
@@ -80,6 +90,7 @@ FM_HOME="${FM_HOME:-$FM_ROOT}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 INBOX="$STATE/inbox"
+INBOX_LOCK="$INBOX/.mutation.lock"
 
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
@@ -152,6 +163,10 @@ aws_call() {
 # Append exactly one wake so firstmate picks the note up at its next drain.
 # Failure to wake is NOT allowed to lose the note: the record is already on
 # disk, so we report the wake failure and still exit non-zero loudly.
+wake_payload() {
+  printf 'check: captain inbox note %s - %s' "$1" "$2"
+}
+
 wake_for() {
   local id=$1 summary=$2 lib="$FM_ROOT/bin/fm-wake-lib.sh"
   if [ ! -r "$lib" ]; then
@@ -160,7 +175,33 @@ wake_for() {
   fi
   # shellcheck source=/dev/null
   FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" STATE="$STATE" . "$lib"
-  fm_wake_append check "inbox:$id" "check: captain inbox note $id - $summary"
+  fm_wake_append check "inbox:$id" "$(wake_payload "$id" "$summary")"
+}
+
+note_summary() {
+  printf '%s' "$1" | tr '\n\t' '  ' | cut -c1-100
+}
+
+handled_external_note() {
+  local source=$1 id=$2 indexed
+  indexed="$INBOX/handled/external-$source/by-id/$id.note"
+  if [ -f "$indexed" ] && [ ! -L "$indexed" ]; then
+    printf '%s\n' "$indexed"
+    return 0
+  fi
+  return 1
+}
+
+write_note_record() {  # <file> <id> <source> <body> [extra-header]
+  local file=$1 id=$2 source=$3 body=$4 extra=${5:-}
+  {
+    printf 'id=%s\n' "$id"
+    printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'source=%s\n' "$source"
+    [ -z "$extra" ] || printf '%s\n' "$extra"
+    printf -- '--\n'
+    printf '%s\n' "$body"
+  } >"$file"
 }
 
 queue_note() {
@@ -172,20 +213,13 @@ queue_note() {
   tmp=$(mktemp "$INBOX/.staging-XXXXXX")
   staging_name=$(basename "$tmp")
   id="$(date +%s)-${staging_name#.staging-}"
-  {
-    printf 'id=%s\n' "$id"
-    printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'source=%s\n' "$source"
-    [ -z "$extra" ] || printf '%s\n' "$extra"
-    printf -- '--\n'
-    printf '%s\n' "$body"
-  } >"$tmp"
+  write_note_record "$tmp" "$id" "$source" "$body" "$extra"
 
   # Publish the completed note atomically.
   mv "$tmp" "$INBOX/$id.note"
 
   # One-line summary for the wake payload; the full body stays in the file.
-  summary=$(printf '%s' "$body" | tr '\n\t' '  ' | cut -c1-100)
+  summary=$(note_summary "$body")
   printf 'queued %s\n' "$id"
   printf '  %s\n' "$summary"
   if wake_for "$id" "$summary"; then
@@ -205,6 +239,188 @@ cmd_note() {
     body="$*"
   fi
   queue_note text "$body"
+}
+
+external_wake_queued_locked() {
+  local kind=$1 key=$2 queued_key
+  while IFS= read -r queued_key; do
+    [ "$queued_key" != "$key" ] || return 0
+  done < <(fm_wake_queued_keys_locked "$kind")
+  return 1
+}
+
+external_note_mutate_locked() {
+  local source=$1 dedupe_key=$2 body=$3 id=$4 note=$5 wake_key=$6 summary=$7
+  local handled_note status=0 release_status=0 tmp='' created=0 wake_locked=0
+  EXTERNAL_NOTE_OUTCOME=queued
+  EXTERNAL_NOTE_ERROR=durable
+  if ! fm_lock_acquire_wait "$INBOX_LOCK"; then
+    EXTERNAL_NOTE_ERROR=inbox-lock
+    return 1
+  fi
+
+  if handled_note=$(handled_external_note "$source" "$id"); then
+    if [ "$(sed -n '/^--$/,$p' "$handled_note" | tail -n +2)" != "$body" ]; then
+      EXTERNAL_NOTE_ERROR=reused
+      status=1
+    else
+      EXTERNAL_NOTE_OUTCOME=already-queued
+    fi
+  elif [ -f "$note" ] \
+      && [ "$(sed -n '/^--$/,$p' "$note" | tail -n +2)" != "$body" ]; then
+    EXTERNAL_NOTE_ERROR=reused
+    status=1
+  else
+    if [ ! -f "$note" ]; then
+      tmp=$(mktemp "$INBOX/.staging-XXXXXX") || status=$?
+      [ "$status" -ne 0 ] \
+        || write_note_record "$tmp" "$id" "$source" "$body" "external_id=$dedupe_key" || status=$?
+      if [ "$status" -eq 0 ]; then
+        if mv "$tmp" "$note"; then
+          created=1
+        else
+          status=$?
+          rm -f "$tmp" 2>/dev/null || true
+        fi
+      else
+        rm -f "$tmp" 2>/dev/null || true
+      fi
+    fi
+    if [ "$status" -eq 0 ]; then
+      if fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"; then
+        wake_locked=1
+      else
+        status=$?
+      fi
+    fi
+    if [ "$status" -eq 0 ]; then
+      { : >> "$FM_WAKE_QUEUE" && chmod 0600 "$FM_WAKE_QUEUE"; } || status=$?
+    fi
+    if [ "$status" -eq 0 ] && { [ "$created" -eq 1 ] \
+        || ! external_wake_queued_locked check "$wake_key"; }; then
+      fm_wake_append_locked check "$wake_key" "$(wake_payload "$id" "$summary")" || status=$?
+    fi
+  fi
+
+  if [ "$wake_locked" -eq 1 ]; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK" || release_status=$?
+    [ "$status" -ne 0 ] || status=$release_status
+  fi
+  release_status=0
+  fm_lock_release "$INBOX_LOCK" || release_status=$?
+  [ "$status" -ne 0 ] || status=$release_status
+  return "$status"
+}
+
+cmd_external_note() {
+  local source=${1:-} dedupe_key=${2:-} input=${3:-} body id note wake_key summary lib status
+  [ "$#" -eq 3 ] && [ "$input" = "-" ] \
+    || die "usage: fm-inbox.sh external-note <source> <dedupe-key> -"
+  case "$source" in ''|*[!a-z0-9-]*|?????????????????????????????????*) die "invalid external-note source" ;; esac
+  case "$dedupe_key" in ''|*[!a-z0-9_]*|?????????????????????????????????????????????????????????????????????????????????????????????????????*)
+    die "invalid external-note dedupe key" ;;
+  esac
+  body=$(cat)
+  [ -n "${body//[[:space:]]/}" ] || die "refusing to queue an empty note"
+  umask 077
+
+  id="external-$source-$dedupe_key"
+  note="$INBOX/$id.note"
+  wake_key="inbox:$id"
+  summary=$(note_summary "$body")
+  mkdir -p "$INBOX/handled/external-$source/by-id"
+  chmod 0700 "$INBOX" "$INBOX/handled" "$INBOX/handled/external-$source" \
+    "$INBOX/handled/external-$source/by-id"
+  lib="$FM_ROOT/bin/fm-wake-lib.sh"
+  [ -r "$lib" ] || die "missing $lib"
+  # shellcheck source=/dev/null
+  FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" STATE="$STATE" . "$lib"
+
+  if external_note_mutate_locked "$source" "$dedupe_key" "$body" "$id" "$note" "$wake_key" "$summary"; then
+    printf '%s %s\n' "$EXTERNAL_NOTE_OUTCOME" "$id"
+    return 0
+  else
+    status=$?
+  fi
+  case "$EXTERNAL_NOTE_ERROR" in
+    reused) die "external note key was reused with different content: $dedupe_key" ;;
+    inbox-lock) die "could not lock the inbox" ;;
+    *) die "external note $id was not durably announced" ;;
+  esac
+}
+
+cmd_purge_external_handled() {
+  local source=${1:-} days=${2:-} limit=${3:-1000} file directory partition cutoff count=0 status=0
+  local candidate_count=0 offset batch_size=100 source_root index_root index lib
+  local candidates=() batch=() validated=() delete_paths=() expired_directories=()
+  [ "$#" -ge 2 ] && [ "$#" -le 3 ] \
+    || die "usage: fm-inbox.sh purge-external-handled <source> <retention-days> [limit]"
+  case "$source" in ''|*[!a-z0-9-]*|?????????????????????????????????*) die "invalid external-note source" ;; esac
+  case "$days" in ''|*[!0-9]*|????*) die "retention days must be an integer from 1 through 365" ;; esac
+  case "$limit" in ''|*[!0-9]*|??????*) die "purge limit must be an integer from 1 through 10000" ;; esac
+  days=$((10#$days))
+  limit=$((10#$limit))
+  [ "$days" -ge 1 ] && [ "$days" -le 365 ] \
+    || die "retention days must be an integer from 1 through 365"
+  [ "$limit" -ge 1 ] && [ "$limit" -le 10000 ] \
+    || die "purge limit must be an integer from 1 through 10000"
+  source_root="$INBOX/handled/external-$source"
+  index_root="$source_root/by-id"
+  [ -d "$source_root" ] && [ ! -L "$source_root" ] || { printf 'purged 0\n'; return 0; }
+  [ ! -e "$index_root" ] || { [ -d "$index_root" ] && [ ! -L "$index_root" ]; } \
+    || die "invalid handled-note index"
+  if ! cutoff=$(date -u -v-"${days}"d +%Y-%m-%d 2>/dev/null); then
+    cutoff=$(date -u -d "$days days ago" +%Y-%m-%d 2>/dev/null) \
+      || die "could not calculate the handled-note retention cutoff"
+  fi
+
+  lib="$FM_ROOT/bin/fm-wake-lib.sh"
+  [ -r "$lib" ] || die "missing $lib"
+  # shellcheck source=/dev/null
+  FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" STATE="$STATE" . "$lib"
+  for directory in "$source_root"/????-??-??; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || continue
+    partition=${directory##*/}
+    [[ "$partition" < "$cutoff" ]] || continue
+    expired_directories+=("$directory")
+  done
+  while IFS= read -r -d '' file; do
+    [ "$candidate_count" -lt "$limit" ] || break
+    candidates[candidate_count]="$file"
+    candidate_count=$((candidate_count + 1))
+  done < <(
+    for directory in "${expired_directories[@]}"; do
+      find "$directory" -mindepth 1 -maxdepth 1 -type f \
+        -name "external-$source-*.note" -mtime "+$((days - 1))" -print0
+    done
+  )
+  for ((offset = 0; offset < candidate_count; offset += batch_size)); do
+    batch=("${candidates[@]:offset:batch_size}")
+    validated=()
+    fm_lock_acquire_wait "$INBOX_LOCK" || die "could not lock the inbox"
+    while IFS= read -r -d '' file; do
+      validated+=("$file")
+    done < <(find "${batch[@]}" -maxdepth 0 -type f \
+      -name "external-$source-*.note" -mtime "+$((days - 1))" -print0 2>/dev/null)
+    if [ "${#validated[@]}" -gt 0 ]; then
+      delete_paths=()
+      for file in "${validated[@]}"; do
+        index="$index_root/${file##*/}"
+        delete_paths+=("$file" "$index")
+      done
+      if rm -f -- "${delete_paths[@]}"; then
+        count=$((count + ${#validated[@]}))
+      else
+        status=$?
+      fi
+    fi
+    fm_lock_release "$INBOX_LOCK" || status=$?
+    [ "$status" -eq 0 ] || break
+  done
+  [ "$status" -eq 0 ] || die "could not purge handled external notes"
+  [ "${#expired_directories[@]}" -eq 0 ] \
+    || rmdir -- "${expired_directories[@]}" 2>/dev/null || true
+  printf 'purged %s\n' "$count"
 }
 
 # ---------------------------------------------------------------- say
@@ -361,16 +577,46 @@ cmd_drain() {
   if [ "${1:-}" = "--ack" ]; then
     shift
     [ "$#" -gt 0 ] || die "usage: fm-inbox.sh drain --ack <id>..."
+    umask 077
     mkdir -p "$INBOX/handled"
-    local id
+    local id lib="$FM_ROOT/bin/fm-wake-lib.sh" status=0 note_source handled_dir handled_index
+    [ -r "$lib" ] || die "missing $lib"
+    # shellcheck source=/dev/null
+    FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$FM_HOME" STATE="$STATE" . "$lib"
+    fm_lock_acquire_wait "$INBOX_LOCK" || die "could not lock the inbox"
     for id in "$@"; do
       if [ -f "$INBOX/$id.note" ]; then
-        mv "$INBOX/$id.note" "$INBOX/handled/$id.note"
-        printf 'acked %s\n' "$id"
+        handled_dir="$INBOX/handled"
+        handled_index=""
+        case "$id" in
+          external-*)
+            note_source=$(sed -n 's/^source=//p' "$INBOX/$id.note" | head -1)
+            case "$note_source" in
+              ''|*[!a-z0-9-]*|?????????????????????????????????*) status=1 ;;
+              *)
+                handled_dir="$INBOX/handled/external-$note_source/$(date -u +%Y-%m-%d)"
+                handled_index="$INBOX/handled/external-$note_source/by-id/$id.note"
+                mkdir -p "$handled_dir" "${handled_index%/*}" && chmod 0700 \
+                  "$INBOX/handled/external-$note_source" "$handled_dir" "${handled_index%/*}" || status=$?
+                ;;
+            esac
+            ;;
+        esac
+        if [ "$status" -eq 0 ] && [ -n "$handled_index" ]; then
+          if [ -L "$handled_index" ] || { [ -e "$handled_index" ] && [ ! "$INBOX/$id.note" -ef "$handled_index" ]; }; then
+            status=1
+          elif [ ! -e "$handled_index" ]; then
+            ln "$INBOX/$id.note" "$handled_index" || status=$?
+          fi
+        fi
+        [ "$status" -ne 0 ] || mv "$INBOX/$id.note" "$handled_dir/$id.note" || status=$?
+        [ "$status" -ne 0 ] || printf 'acked %s\n' "$id"
       else
         printf 'already-acked %s\n' "$id"
       fi
     done
+    fm_lock_release "$INBOX_LOCK" || status=$?
+    [ "$status" -eq 0 ] || die "could not acknowledge every inbox note"
     return 0
   fi
   cmd_list
@@ -380,8 +626,10 @@ cmd_drain() {
 # ---------------------------------------------------------------- dispatch
 
 case "${1:-}" in
-  note)   shift; cmd_note "$@" ;;
-  say)    shift; cmd_say "$@" ;;
+  note)          shift; cmd_note "$@" ;;
+  external-note) shift; cmd_external_note "$@" ;;
+  purge-external-handled) shift; cmd_purge_external_handled "$@" ;;
+  say)           shift; cmd_say "$@" ;;
   status) shift; cmd_status ;;
   ask)    shift; cmd_ask "$@" ;;
   list)   shift; cmd_list ;;
