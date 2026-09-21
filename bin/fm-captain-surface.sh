@@ -17,13 +17,17 @@
 # by Firstmate. Typed records must have a completed application receipt before
 # the cursor can cross them. A request is handled conversationally and is
 # advanced explicitly after that handling. Agent/system records can be retained
-# as non-authoritative observations, but `apply` can only record them ignored.
+# as non-authoritative observations, but `apply` can only record them ignored. A
+# typed decision whose offer is stale at apply is likewise recorded ignored so
+# the input cursor can still advance past it.
 #
 # Output acknowledgement: each registered client has an independent cursor in
 # clients/<client>.ack. An extension may acknowledge only the highest contiguous
-# sequence it has presented. Re-registering a client replaces its endpoint
-# generation without changing that cursor, so /clear, restart, and app closure
-# replay only unread output. Calls from an older generation are refused.
+# sequence it has presented. `outcomes` returns at most a bounded batch of unread
+# output per call so a large replay backlog drains incrementally. Re-registering
+# a client replaces its endpoint generation without changing that cursor, so
+# /clear, restart, and app closure replay only unread output. Calls from an older
+# generation are refused.
 #
 # Typed authority: only a direct-user decision bound to an offered task id and
 # exact open-call revision can reach fm-captain-hold.sh. Only direct-user
@@ -102,6 +106,7 @@ LOCK="$ROOT/.lock"
 MAX_SAFE_SEQ=9007199254740991
 MAX_PAYLOAD_BYTES=16384
 MAX_BODY_BYTES=16384
+OUTCOME_BATCH=100
 LOCK_HELD=0
 
 cleanup() {
@@ -641,8 +646,8 @@ publish_apply_outcome() { # <seq> <authority> <payload>
 }
 
 command_apply() {
-  local seq='' row kind authority payload receipt started task revision current answer mode verb note
-  local decision_file stdout_file stderr_file rc=0 diagnostic phase
+  local seq='' row kind authority payload receipt started task revision answer mode verb note
+  local decision_file stdout_file stderr_file rc=0 diagnostic phase offer_reason offer_rc
   local -a owner_args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in --seq) seq=${2:-}; shift 2 ;; *) usage >&2; exit 2 ;; esac
@@ -683,7 +688,14 @@ command_apply() {
     return 0
   fi
   if [ "$authority" = typed-decision ]; then
-    validate_decision_offer "$payload"
+    offer_rc=0
+    offer_reason=$( (validate_decision_offer "$payload") 2>&1 ) || offer_rc=$?
+    if [ "$offer_rc" -ne 0 ]; then
+      write_receipt "$seq" ignored "$started" "${offer_reason#fm-captain-surface: }"
+      jq -c . "$receipt"
+      release
+      return 0
+    fi
   fi
   write_receipt "$seq" claimed "$started" ""
   release
@@ -830,7 +842,7 @@ command_outcomes() {
   ack=$(read_marker "$(client_ack_path "$client")")
   last=$(last_seq "$OUTPUTS")
   [ "$ack" -le "$last" ] || die "client output cursor is ahead of the store"
-  [ -s "$OUTPUTS" ] && jq -c --argjson ack "$ack" 'select(.seq > $ack)' "$OUTPUTS"
+  [ -s "$OUTPUTS" ] && jq -c --argjson ack "$ack" 'select(.seq > $ack)' "$OUTPUTS" | awk "NR <= $OUTCOME_BATCH"
   release
 }
 
