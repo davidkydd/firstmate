@@ -8,7 +8,7 @@ The operator and rollout contract is in [`teams-integration.md`](teams-integrati
 The cloud service under `integrations/teams/src/` uses the Microsoft 365 Agents SDK over the supported Bot Framework activity protocol.
 Before application processing, the authentication path applies the token and channel-origin checks in the inbound state machine below.
 The ingress then binds the configured tenant, Entra sender object ID, Bot Framework sender ID, conversation ID and type, activity ID and timestamp, service URL, and bot ID into an immutable request envelope.
-[`integrations/teams/protocol/request.schema.json`](../integrations/teams/protocol/request.schema.json) and [`integrations/teams/protocol/result.schema.json`](../integrations/teams/protocol/result.schema.json) are the wire-format owners.
+[`integrations/teams/src/contracts.mjs`](../integrations/teams/src/contracts.mjs) owns runtime wire-format validation and deterministic identity semantics; [`request.schema.json`](../integrations/teams/protocol/request.schema.json) and [`result.schema.json`](../integrations/teams/protocol/result.schema.json) describe the envelope shapes for external tooling.
 
 The cloud service writes a request identity record and an exclusive enqueue claim to Azure Table Storage before sending the request to Azure Service Bus and before acknowledging it in Teams.
 The request queue uses its deterministic request ID as the Service Bus message ID and enables duplicate detection.
@@ -16,7 +16,7 @@ The table record remains the long-lived duplicate and identity binding after the
 A send interrupted between queue acceptance and the table update is retried with the same message ID after its bounded claim expires.
 A separate acknowledgement claim prevents concurrent receipts; a definite posting failure releases that claim for retry, while an interrupted posting remains in its durable claim state for operator reconciliation to avoid an uncertain duplicate.
 
-The connector on the Mac opens only outbound TLS connections to Azure Service Bus.
+The connector on the Mac opens no listener and consumes and publishes bridge messages through outbound TLS connections to Azure Service Bus.
 It validates the envelope and the tenant, sender, and conversation allowlists again and stores an owner-only local capture.
 For a general request it first invokes `bin/fm-inbox.sh external-note teams-review <request-id> -` with a fixed notification that contains no request text.
 Only the explicit local `approve-request` command, supplied with text that exactly matches the capture, records approval and invokes `bin/fm-inbox.sh external-note teams <request-id> -` with the request text.

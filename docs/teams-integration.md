@@ -21,7 +21,7 @@ The message body is data and is never used as a shell command, process argument,
 ## Architecture and trust boundaries
 
 The complete component, protocol, durability, idempotence, authority, and reply-correlation design is owned by [`teams-architecture.md`](teams-architecture.md).
-The cloud endpoint is public because Azure Bot Service must call it, while the Mac opens only outbound Azure Service Bus connections.
+The cloud endpoint is public because Azure Bot Service must call it, while the Mac opens no listener and uses outbound connections for Azure access.
 
 ## Local connector configuration
 
@@ -34,6 +34,7 @@ Install the pinned runtime dependencies without running package lifecycle script
 Copy the example into the Firstmate home, replace every placeholder with an approved value, change `enabled` to `true`, and make the file owner-only.
 
 ```sh
+install -d -m 0700 "$FM_HOME/config"
 install -m 0600 integrations/teams/config.example.json "$FM_HOME/config/teams.json"
 ```
 
@@ -70,11 +71,12 @@ For a general request, review the original Teams message and repeat its exact re
 Put that locally repeated text in an owner-only file without adding a newline; the approval command rejects any mismatch and only then releases the captured request into normal intake.
 
 ```sh
-printf %s 'The exact request repeated locally' > /owner-only/path/approval.txt
+approval_file=$(mktemp "${TMPDIR:-/tmp}/firstmate-teams-approval.XXXXXX")
+printf %s 'The exact request repeated locally' > "$approval_file"
 FM_HOME=/path/to/firstmate-home bin/fm-teams-connector.sh approve-request \
   --request-id tm_RECORDED_ID \
-  --text-file /owner-only/path/approval.txt
-rm /owner-only/path/approval.txt
+  --text-file "$approval_file"
+rm -f -- "$approval_file"
 ```
 
 Publish a bounded typed result only for a locally approved request already captured by this home.
@@ -164,8 +166,11 @@ The template creates the Azure Bot resource and Teams channel but does not publi
 
 Build the image from the repository root so the Dockerfile can retain a narrow copy set.
 Pin the approved image by digest in the deployment parameters.
+Copy the non-deployable example beside the template, keep the resulting `main.bicepparam` untracked, and replace every placeholder before running the what-if command.
 
 ```sh
+install -m 0600 integrations/teams/infra/main.bicepparam.example \
+  integrations/teams/infra/main.bicepparam
 docker build -f integrations/teams/Dockerfile -t APPROVED_REGISTRY/firstmate-teams:VERSION .
 az bicep build --file integrations/teams/infra/main.bicep
 az deployment group what-if \
@@ -174,8 +179,7 @@ az deployment group what-if \
   --parameters enableCloudService=false
 ```
 
-The example parameter file is intentionally non-deployable until every placeholder is replaced.
-A real `main.bicepparam` must remain outside version control if it contains organization-specific identifiers.
+A real `main.bicepparam` must remain outside version control because it contains organization-specific identifiers.
 The deployment itself is not authorized by this implementation increment.
 
 ## Teams package preparation
@@ -197,7 +201,8 @@ Do not log activity bodies, result text, authorization headers, access tokens, c
 Logs may include schema version, deterministic request or result ID, tenant ID, disposition, bounded error class, queue name, and latency.
 Restrict access to logs because correlation identifiers and tenant metadata are still operational data.
 
-A malformed or unauthorized queue envelope is dead-lettered immediately.
+A malformed request or result envelope, or an unauthorized request envelope, is dead-lettered immediately.
+A result whose source is no longer allowlisted is abandoned for retry and eventually reaches the dead-letter queue if the configuration remains unchanged.
 A transient queue outage abandons the peek-locked message and leaves the request durable for retry.
 A connector restart replays the payload-free approval notification, and an interrupted approval replays its separate deterministic approved note rather than creating duplicate work.
 A result whose Teams post may have succeeded before a crash is dead-lettered as uncertain and requires conversation-level reconciliation.

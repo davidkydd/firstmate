@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # fm-inbox.sh - the captain's out-of-band capture surface.
 #
-# Solves three DIFFERENT problems with three different mechanisms, because they
+# Solves four DIFFERENT problems with four different mechanisms, because they
 # are not the same problem:
 #
 #   note    Queue an idea for firstmate while firstmate is mid-turn and cannot
 #           answer. Writes a durable record and appends ONE `check` wake, so the
 #           note survives a crash and is presented at firstmate's next drain.
 #   external-note
-#           The idempotent form for a reviewed transport. It binds a validated
-#           source and opaque deduplication key to one deterministic note while
-#           still writing and waking only through this inbox owner.
-#           These are the only subcommands that touch firstmate's wake queue.
+#           Idempotently publish one item from a trusted external-transport
+#           adapter. The adapter owns source and payload validation; this command
+#           binds its source and opaque deduplication key to one deterministic
+#           note while still writing and waking only through this inbox owner.
+#           `note` (including `say`) and `external-note` are the only paths that
+#           append to firstmate's wake queue.
 #   say     Same as `note`, but the body comes from spoken audio on stdin.
 #           Speech is an INPUT METHOD here, not an architecture: it transcribes
 #           and then takes exactly the `note` path.
@@ -47,15 +49,17 @@
 # An absent profile means the call uses whatever credentials are already in the
 # environment, which is also what FM_INBOX_PROFILE= (empty) forces.
 #
-# `note`, `status`, `list` and `drain` need NO configuration at all, because they
-# make no model call. The voice handover depends on `note`, so it keeps working in
-# a home that has configured nothing.
+# `note`, `external-note`, `purge-external-handled`, `status`, `list`, and
+# `drain` need NO configuration at all, because they make no model call. The
+# voice handover depends on `note`, so it keeps working in a home that has
+# configured nothing.
 #
 # Environment:
 #   FM_HOME              operational home whose state/ and data/ are used.
 #
 # PRIVACY: `say` sends your audio and `ask` sends your question to Bedrock.
-# `note`, `status`, `list` and `drain` make no network call at all.
+# `note`, `external-note`, `purge-external-handled`, `status`, `list`, and
+# `drain` make no network call at all.
 #
 # `note` is also the queueing half of the spoken interface: when the voice agent
 # in bin/fm-voice-relay.py hands real work over to firstmate, it runs this
