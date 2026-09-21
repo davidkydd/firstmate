@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { read as readDescriptor } from "node:fs";
+import { constants as fsConstants, read as readDescriptor } from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { ServiceBusClient } from "@azure/service-bus";
 import { sourceAuthorizationFailure } from "./authorization.mjs";
 import { connectorConfig } from "./config.mjs";
 import { ConnectorCore } from "./connector-core.mjs";
-import { makeResult, MAX_RESULT_BYTES } from "./contracts.mjs";
+import { makeResult, MAX_REQUEST_BYTES, MAX_RESULT_BYTES } from "./contracts.mjs";
 import { FirstmateInboxAdapter, CountsStatusReader } from "./local-adapters.mjs";
 import { LocalRequestStore } from "./local-store.mjs";
 import { redactReply } from "./policy.mjs";
@@ -18,7 +18,25 @@ import { closeResources, ServiceBusJsonSender, processPeekLockMessage, purgeDead
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 function usage() {
-  console.error("usage: fm-teams-connector.sh serve | status | publish-result --request-id <id> --outcome completed|refused|failed --text-file <path|->");
+  console.error("usage: fm-teams-connector.sh serve | status | approve-request --request-id <id> --text-file <owner-only-path> | publish-result --request-id <id> --outcome completed|refused|failed --text-file <path|->");
+}
+
+function parseApprovalArgs(args) {
+  const parsed = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const option = args[index];
+    const value = args[index + 1];
+    if (!["--request-id", "--text-file"].includes(option) || value === undefined) {
+      throw new Error("approve-request requires --request-id <id> and --text-file <owner-only-path>");
+    }
+    if (parsed[option.slice(2)] !== undefined) throw new Error(`${option} may be specified only once`);
+    parsed[option.slice(2)] = value;
+  }
+  if (!/^tm_[a-f0-9]{64}$/.test(parsed["request-id"] || "")) throw new Error("invalid request id");
+  if (!parsed["text-file"] || parsed["text-file"] === "-") {
+    throw new Error("approve-request requires --text-file <owner-only-path>");
+  }
+  return parsed;
 }
 
 async function configured(home) {
@@ -37,12 +55,21 @@ function readInto(fd, buffer, offset, length) {
   });
 }
 
-async function readBoundedText(file, maxBytes = MAX_RESULT_BYTES) {
-  const handle = file === "-" ? null : await open(file, "r");
+async function readBoundedText(file, maxBytes = MAX_RESULT_BYTES, { requirePrivate = false } = {}) {
+  const handle = file === "-"
+    ? null
+    : await open(file, requirePrivate ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW : "r");
   const fd = handle?.fd ?? 0;
   const buffer = Buffer.alloc(maxBytes + 1);
   let used = 0;
   try {
+    if (requirePrivate) {
+      const info = await handle.stat();
+      const wrongOwner = typeof process.getuid === "function" && info.uid !== process.getuid();
+      if (!info.isFile() || wrongOwner || (info.mode & 0o077) !== 0) {
+        throw new Error("approval text must be an owner-only regular file owned by the current user");
+      }
+    }
     while (used < buffer.length) {
       const bytesRead = await readInto(fd, buffer, used, buffer.length - used);
       if (bytesRead === 0) break;
@@ -164,6 +191,32 @@ async function status(home) {
   }, null, 2));
 }
 
+async function approveRequest(home, args) {
+  const parsed = parseApprovalArgs(args);
+  const config = await connectorConfig(home, process.env.FM_TEAMS_CONFIG);
+  const store = new LocalRequestStore(home);
+  await store.ensure();
+  await store.assertPrivate();
+  const record = await store.get(parsed["request-id"]);
+  if (!record?.request) throw new Error("no local Teams request has that request id");
+  if (sourceAuthorizationFailure(record.request.source, config)) {
+    throw new Error("local Teams request identity is no longer authorized by configuration");
+  }
+  if (Date.now() >= Date.parse(record.request.resultDeadline)) {
+    throw new Error("the Teams request result publication deadline has passed");
+  }
+  const approvedText = await readBoundedText(parsed["text-file"], MAX_REQUEST_BYTES, { requirePrivate: true });
+  const approval = await store.beginApproval(record.request.requestId, approvedText);
+  if (!approval.approved) {
+    console.log(`already approved ${record.request.requestId} ${approval.record.approvedInboxId}`);
+    return;
+  }
+  const inbox = new FirstmateInboxAdapter({ home, root: SOURCE_ROOT });
+  const inboxId = await inbox.deliverApproved(record.request);
+  await store.finishApproval(record.request.requestId, inboxId);
+  console.log(`approved ${record.request.requestId} ${inboxId}`);
+}
+
 async function publishResult(home, args) {
   const parsed = parsePublishArgs(args);
   const { config, serviceBus } = await configured(home);
@@ -175,6 +228,9 @@ async function publishResult(home, args) {
     if (!record?.request) throw new Error("no local Teams request has that request id");
     if (sourceAuthorizationFailure(record.request.source, config)) {
       throw new Error("local Teams request identity is no longer authorized by configuration");
+    }
+    if (record.request.command.kind === "work" && record.approvalStatus !== "approved") {
+      throw new Error("Teams request requires trusted-local approval before result publication");
     }
     const text = await readBoundedText(parsed["text-file"]);
     const result = makeResult(record.request, parsed.outcome, redactReply(text, MAX_RESULT_BYTES));
@@ -191,6 +247,7 @@ async function main() {
   const home = path.resolve(process.env.FM_HOME || SOURCE_ROOT);
   if (command === "serve") return serve(home);
   if (command === "status") return status(home);
+  if (command === "approve-request") return approveRequest(home, args);
   if (command === "publish-result") return publishResult(home, args);
   usage();
   process.exitCode = 2;

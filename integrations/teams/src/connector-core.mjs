@@ -58,7 +58,7 @@ export class ConnectorCore {
     }
 
     const authority = classifyAuthority(request.command.text);
-    if (!authority.allowed) {
+    if (authority.decision === "refuse") {
       if (record.state === "received") {
         record = await this.store.update(request.requestId, {
           state: "refused",
@@ -70,15 +70,29 @@ export class ConnectorCore {
       return { disposition: "refused", requestId: request.requestId, category: authority.category };
     }
 
-    if (record.state === "received") {
-      const inboxId = await this.inbox.deliver(request);
-      record = await this.store.update(request.requestId, { state: "accepted", inboxId });
+    if (authority.decision !== "require-local-approval") {
+      throw new Error("Teams authority classifier returned an unsupported decision");
     }
-    if (!record.inboxId) {
-      throw new Error("accepted Teams request is missing its durable Firstmate inbox id");
+
+    if (!record.reviewInboxId) {
+      const reviewInboxId = await this.inbox.requestApproval(request.requestId);
+      record = await this.store.update(request.requestId, {
+        state: "awaiting-local-approval",
+        approvalStatus: "pending",
+        reviewInboxId,
+      });
     }
-    const response = "The request is in the trusted local Firstmate session.";
+    if (!record.reviewInboxId || !["pending", "delivering", "approved"].includes(record.approvalStatus)) {
+      throw new Error("Teams request is missing its durable local approval gate");
+    }
+    const response = record.approvalStatus === "approved"
+      ? "The request was approved in the trusted local Firstmate session."
+      : "The request reached this Mac and is awaiting approval in the trusted local Firstmate session.";
     await this.sendResult(record, "accepted", response);
-    return { disposition: "accepted", requestId: request.requestId, inboxId: record.inboxId };
+    return {
+      disposition: record.approvalStatus === "approved" ? "approved" : "pending-approval",
+      requestId: request.requestId,
+      inboxId: record.approvedInboxId || record.reviewInboxId,
+    };
   }
 }

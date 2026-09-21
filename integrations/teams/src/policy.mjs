@@ -17,10 +17,10 @@ export function classifyAuthority(text) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   for (const [category, pattern] of RESTRICTED) {
     if (pattern.test(normalized)) {
-      return { allowed: false, category, response: LOCAL_CONFIRMATION };
+      return { decision: "refuse", category, response: LOCAL_CONFIRMATION };
     }
   }
-  return { allowed: true, category: "untrusted Teams intent" };
+  return { decision: "require-local-approval", category: "untrusted Teams intent" };
 }
 
 export function redactReply(text, maxBytes = 2500) {

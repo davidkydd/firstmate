@@ -4,13 +4,15 @@
 # The connector is disabled until config/teams.json exists, is owner-only, and
 # contains enabled=true. It authenticates to the configured single-tenant Azure
 # Service Bus namespace with the Azure CLI identity pinned to that tenant.
-# It never opens a listener. Accepted message text reaches Firstmate only on
-# stdin through `fm-inbox.sh external-note`; it never becomes shell syntax,
-# arguments, a lifecycle key sequence, or a direct fleet-state mutation.
+# It never opens a listener. General message text reaches Firstmate only after
+# exact trusted-local approval and only on stdin through `fm-inbox.sh
+# external-note`; it never becomes shell syntax, arguments, a lifecycle key
+# sequence, or a direct fleet-state mutation.
 #
 # Usage:
 #   fm-teams-connector.sh serve
 #   fm-teams-connector.sh status
+#   fm-teams-connector.sh approve-request --request-id <id> --text-file <owner-only-path>
 #   fm-teams-connector.sh publish-result --request-id <id>
 #       --outcome completed|refused|failed --text-file <path|->
 #

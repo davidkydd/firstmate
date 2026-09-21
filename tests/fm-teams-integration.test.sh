@@ -22,10 +22,17 @@ HOME_DIR="$TMP_ROOT/home"
 REQUEST="tm_$(printf '%064d' 0)"
 OTHER="tm_$(printf '%064d' 1)"
 mkdir -p "$HOME_DIR/state/teams/requests"
-printf '%s\n' '{"captured":true}' > "$HOME_DIR/state/teams/requests/$REQUEST.json"
-printf '%s\n' '{"captured":true}' > "$HOME_DIR/state/teams/requests/$OTHER.json"
+printf '%s\n' '{"captured":true,"approvalStatus":"approved"}' > "$HOME_DIR/state/teams/requests/$REQUEST.json"
+printf '%s\n' '{"captured":true,"approvalStatus":"pending"}' > "$HOME_DIR/state/teams/requests/$OTHER.json"
 printf '%s\n' 'kind=ship' 'mode=no-mistakes' > "$HOME_DIR/state/work.meta"
+printf '%s\n' 'kind=ship' 'mode=no-mistakes' > "$HOME_DIR/state/pending.meta"
 
+if FM_HOME="$HOME_DIR" "$ROOT/bin/fm-teams-link.sh" link "$OTHER" pending >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
+  fail "a task must not bind an unapproved Teams request"
+fi
+assert_contains "$(cat "$TMP_ROOT/err")" "requires trusted-local approval" \
+  "task binding enforces the local approval gate"
+printf '%s\n' '{"captured":true,"approvalStatus":"approved"}' > "$HOME_DIR/state/teams/requests/$OTHER.json"
 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-teams-link.sh" link "$REQUEST" work >/dev/null
 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-teams-link.sh" link "$REQUEST" work >/dev/null
 expect_code 1 "$(grep -c "^teams_request=$REQUEST$" "$HOME_DIR/state/work.meta")" \

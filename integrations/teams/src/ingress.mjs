@@ -28,13 +28,9 @@ export function deliveryFailureReply(error) {
   return "The request could not be processed. Try again later.";
 }
 
-export class AuthenticationAdmissionLimiter {
-  constructor({ limit, concurrency = 16, windowMilliseconds = 60_000 }) {
-    this.limit = limit;
+export class AuthenticationConcurrencyLimiter {
+  constructor({ concurrency = 16 }) {
     this.concurrency = concurrency;
-    this.windowMilliseconds = windowMilliseconds;
-    this.events = [];
-    this.eventHead = 0;
     this.active = 0;
   }
 
@@ -48,8 +44,17 @@ export class AuthenticationAdmissionLimiter {
       this.active -= 1;
     };
   }
+}
 
-  takeAuthenticated(nowMilliseconds = Date.now()) {
+export class AuthorizedTrafficRateLimiter {
+  constructor({ limit, windowMilliseconds = 60_000 }) {
+    this.limit = limit;
+    this.windowMilliseconds = windowMilliseconds;
+    this.events = [];
+    this.eventHead = 0;
+  }
+
+  take(nowMilliseconds = Date.now()) {
     const cutoff = nowMilliseconds - this.windowMilliseconds;
     while (this.eventHead < this.events.length && this.events[this.eventHead] <= cutoff) {
       this.eventHead += 1;
@@ -156,11 +161,12 @@ export async function reconcilePendingEnqueues({
 }
 
 export class TeamsIngress {
-  constructor({ config, store, requestSender, rateLimiter }) {
+  constructor({ config, store, requestSender, rateLimiter, authorizedRateLimiter }) {
     this.config = config;
     this.store = store;
     this.requestSender = requestSender;
     this.rateLimiter = rateLimiter;
+    this.authorizedRateLimiter = authorizedRateLimiter;
   }
 
   async handle(context, now = new Date()) {
@@ -187,7 +193,8 @@ export class TeamsIngress {
     if (sourceAuthorized) {
       const rateKey = `${candidateTenant}:${candidateSender}`;
       const itemId = String(context.activity?.id || `missing_${bodySha256(String(context.activity?.text || ""))}`);
-      if (!this.rateLimiter.take(rateKey, itemId, now.getTime())) {
+      const globallyAllowed = !this.authorizedRateLimiter || this.authorizedRateLimiter.take(now.getTime());
+      if (!globallyAllowed || !this.rateLimiter.take(rateKey, itemId, now.getTime())) {
         if (this.rateLimiter.shouldNotify(rateKey, now.getTime())) {
           await context.sendActivity(replyActivity(context.activity?.id, "Request refused: the Teams intake rate limit was reached. Try again later."));
         }

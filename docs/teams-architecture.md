@@ -17,13 +17,16 @@ A send interrupted between queue acceptance and the table update is retried with
 A separate acknowledgement claim prevents concurrent receipts; a definite posting failure releases that claim for retry, while an interrupted posting remains in its durable claim state for operator reconciliation to avoid an uncertain duplicate.
 
 The connector on the Mac opens only outbound TLS connections to Azure Service Bus.
-It validates the envelope and the tenant, sender, and conversation allowlists again, stores an owner-only local capture, and invokes `bin/fm-inbox.sh external-note teams <request-id> -` without a shell.
-`fm-inbox.sh` is the only owner that writes the Firstmate inbox note and notification.
-Its deterministic external note ID makes replay after a connector crash idempotent.
+It validates the envelope and the tenant, sender, and conversation allowlists again and stores an owner-only local capture.
+For a general request it first invokes `bin/fm-inbox.sh external-note teams-review <request-id> -` with a fixed notification that contains no request text.
+Only the explicit local `approve-request` command, supplied with text that exactly matches the capture, records approval and invokes `bin/fm-inbox.sh external-note teams <request-id> -` with the request text.
+`fm-inbox.sh` is the only owner that writes either Firstmate inbox note and notification.
+Their deterministic external note IDs make replay after a connector crash idempotent.
 
 Counts-only status is rendered locally by `bin/fm_voice_records.py status --scope counts` and never reads task note bodies or completed history.
-A general request that does not match a known privileged category receives a typed `accepted` result and enters the inbox as an `external-teams-` note whose `source=teams` header preserves its untrusted provenance.
-Later completion, refusal, or failure summaries are emitted with `bin/fm-teams-connector.sh publish-result`, which obtains the reply destination only from the original local request record.
+A general request that does not match a known privileged category receives a typed `accepted` result and creates an `external-teams-review-` note whose fixed body asks for trusted-local approval without exposing the request text to the agent.
+After exact local approval, a separate `external-teams-` note whose `source=teams` header preserves its untrusted provenance carries the request into normal intake.
+Later completion, refusal, or failure summaries are emitted with `bin/fm-teams-connector.sh publish-result`, which obtains the reply destination only from an approved original local request record.
 
 The result queue carries the original immutable source identity.
 The cloud service compares that identity with the stored request before posting a reply with `replyToId` set to the original Teams activity ID.
@@ -55,12 +58,15 @@ The Azure templates do not create a tunnel, listener, NAT rule, SSH service, or 
 3. The connector atomically captures the request under `state/teams/requests/` before any Firstmate handoff.
 4. A status request runs the counts-only reader and creates a typed status result.
 5. A request that matches a known privileged category creates a typed refusal and never reaches the Firstmate inbox.
-6. Every other general request goes to the deterministic `fm-inbox.sh external-note` interface through stdin as provenance-tagged untrusted intent.
-7. The connector records the returned inbox ID before it sends a typed accepted result.
-8. Only after the result queue accepts the deterministic result does the connector complete the request message.
+6. Every other general request creates a deterministic review note containing only safe fixed text and its request ID; the connector records the note and pending approval state before sending a typed accepted result.
+7. The local captain reviews the original Teams message and repeats its exact request in the trusted local session; `approve-request` rejects any text mismatch and records the approval transition.
+8. The approval command sends the matched request through stdin to a second deterministic `source=teams` note, then marks approval complete.
+9. Task binding and terminal result publication reject a work request until that approval is complete.
+10. Only after the result queue accepts the deterministic accepted result does the connector complete the request message.
 
 A queue outage before local delivery leaves the Service Bus message locked or available for redelivery.
-A queue outage after local delivery replays the deterministic external note and cannot create a second Firstmate request.
+A queue outage after local delivery replays the deterministic review note and cannot create a second approval request.
+A process interruption during approval replays the deterministic approved note and cannot create a second Firstmate request.
 A process interruption after result queue acceptance reuses the same Service Bus message ID, so queue duplicate detection converges.
 
 ## Result state machine
@@ -80,8 +86,9 @@ The dead-letter queue and original correlation record preserve the evidence need
 ## Authority and data boundaries
 
 The deterministic authority classifier is independent of authentication and applies again on the Mac.
-Status has a dedicated counts-only path, known privileged requests are refused, and other general requests reach the Firstmate inbox with Teams provenance as untrusted intent.
-Authentication and delivery never grant action authority; the local intake procedure applies the ordinary lifecycle and requires trusted-local confirmation for privileged effects even when novel wording does not match the transport classifier.
+Status has a dedicated counts-only path, known privileged requests are refused, and other general requests initially create only a payload-free local approval notification.
+The request text reaches the mutation-capable Firstmate intake only after the local approval command verifies text repeated in the trusted local session against the captured request.
+Authentication and delivery never grant action authority, and source allowlists do not bypass this approval state.
 
 Message text enters `fm-inbox.sh` on stdin.
 It never enters a shell command line, a generated script, a process lifecycle operation, or a terminal input path.

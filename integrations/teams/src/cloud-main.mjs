@@ -11,7 +11,8 @@ import { requireChannelServiceActivity } from "./channel-auth.mjs";
 import { cloudConfig } from "./config.mjs";
 import { AzureTableRequestStore } from "./cloud-store.mjs";
 import {
-  AuthenticationAdmissionLimiter,
+  AuthenticationConcurrencyLimiter,
+  AuthorizedTrafficRateLimiter,
   deliveryFailureReply,
   reconcilePendingEnqueues,
   shouldSendFailureReply,
@@ -105,6 +106,7 @@ async function main() {
       store,
       requestSender,
       rateLimiter: new SlidingWindowRateLimiter({ limit: config.rateLimitPerMinute }),
+      authorizedRateLimiter: new AuthorizedTrafficRateLimiter({ limit: config.authRateLimitPerMinute }),
     });
     const scheduleEnqueueRetry = (delayMilliseconds) => {
       enqueueRetryTimer = setTimeout(() => {
@@ -160,9 +162,7 @@ async function main() {
     }, { autoCompleteMessages: false, maxConcurrentCalls: 8 });
 
     const app = express();
-    const authenticationAdmission = new AuthenticationAdmissionLimiter({
-      limit: config.authRateLimitPerMinute,
-    });
+    const authenticationAdmission = new AuthenticationConcurrencyLimiter({ concurrency: 16 });
     const admitAuthentication = (_request, response, next) => {
       const release = authenticationAdmission.acquire();
       if (!release) {
@@ -173,20 +173,12 @@ async function main() {
       response.once("close", release);
       next();
     };
-    const limitAuthenticatedTraffic = (_request, response, next) => {
-      if (!authenticationAdmission.takeAuthenticated()) {
-        response.set("Retry-After", "60").status(429).json({ error: "too_many_requests" });
-        return;
-      }
-      next();
-    };
     app.disable("x-powered-by");
     app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
     app.post(
       "/api/messages",
       admitAuthentication,
       (request, response, next) => adapter.authorizeRequest(request, response, next),
-      limitAuthenticatedTraffic,
       express.json({ limit: "64kb", type: "application/json" }),
       requireChannelServiceActivity,
       async (request, response) => {

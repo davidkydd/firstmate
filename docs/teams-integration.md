@@ -10,10 +10,9 @@ In a personal bot chat, send `/firstmate <request>`.
 In a group chat or channel, mention the bot first and send `@Firstmate /firstmate <request>`.
 The group and channel forms are accepted only when the Teams activity contains a structured mention of the configured bot.
 
-The integration permits counts-only status and general requests that can be handed to the trusted local Firstmate session as provenance-tagged untrusted intent.
-It never treats authentication or request delivery as approval for a privileged action.
+The integration permits counts-only status and forwards general requests to the Mac for trusted-local review.
+It never treats authentication or request delivery as approval to act: the first inbox notification contains no request text, and the text reaches normal Firstmate intake only after the captain repeats the exact request in the trusted local session and the connector records a matching approval.
 It refuses requests that match known privileged categories, including merge or release approval, destructive or irreversible operations, security-sensitive changes, credentials or MFA, consent, role or tenant changes, network changes, infrastructure creation, and discarding local work.
-The trusted local intake procedure remains authoritative and requires local confirmation for privileged effects even when novel wording does not match the transport classifier.
 
 Attachments, cards, submitted values, unsupported entities, unsupported markup, oversized bodies, messages from another tenant or sender, and messages outside the configured replay window are rejected before queueing.
 The bot's own sender identity is ignored.
@@ -67,7 +66,18 @@ Start the outbound consumer under the approved workstation service manager.
 FM_HOME=/path/to/firstmate-home bin/fm-teams-connector.sh serve
 ```
 
-Publish a bounded typed result only for a request already captured by this home.
+For a general request, review the original Teams message and repeat its exact request in the trusted local Firstmate session.
+Put that locally repeated text in an owner-only file without adding a newline; the approval command rejects any mismatch and only then releases the captured request into normal intake.
+
+```sh
+printf %s 'The exact request repeated locally' > /owner-only/path/approval.txt
+FM_HOME=/path/to/firstmate-home bin/fm-teams-connector.sh approve-request \
+  --request-id tm_RECORDED_ID \
+  --text-file /owner-only/path/approval.txt
+rm /owner-only/path/approval.txt
+```
+
+Publish a bounded typed result only for a locally approved request already captured by this home.
 The text enters on stdin or through a named file and never appears in process arguments.
 
 ```sh
@@ -111,14 +121,14 @@ It accepts no storage keys, Service Bus connection strings, registry credentials
 | `FM_TEAMS_MAX_ACTIVITY_AGE_SECONDS` | Accepted Teams delivery age, default 900. |
 | `FM_TEAMS_MAX_CLOCK_SKEW_SECONDS` | Future clock tolerance, default 300. |
 | `FM_TEAMS_RATE_LIMIT_PER_MINUTE` | Per-tenant and sender intake limit, default 10. |
-| `FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE` | Global authenticated Bot Framework delivery limit, default 120; at most 16 authentication requests may be in flight. |
+| `FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE` | Global authorized-source delivery limit, default 120; at most 16 Bot Framework authentication requests may be in flight. |
 | `FM_TEAMS_RETENTION_DAYS` | Azure Table correlation retention, including abandoned requests, default 30 and valid from 3 through 365; it must exceed the message retention by more than one day. |
 | `FM_TEAMS_MESSAGE_RETENTION_DAYS` | Active and dead-letter queue delivery window, default 7 and valid from 1 through 14; this full window plus a one-day delivery margin is reserved after the last permitted local result publication. |
 
 The deployment enables the Agents SDK outbound host validator with the SDK's Microsoft host allowlist.
 [`teams-architecture.md`](teams-architecture.md) owns the inbound token and service-origin checks.
-A pre-authentication concurrency bound limits simultaneous JWT verification and signing-key lookups without letting unauthenticated traffic consume the authenticated delivery quota.
-The authenticated global limit applies only after JWT validation, before the per-sender intake limit.
+A pre-authentication concurrency bound limits simultaneous JWT verification and signing-key lookups.
+The global delivery limit is charged only after JWT validation and sender, tenant, and conversation authorization, before the per-sender intake limit, so an unauthorized member cannot consume authorized capacity.
 The container is fixed at one replica because the in-process rate windows are abuse bounds rather than the durable deduplication authority.
 Azure Table Storage and Service Bus remain the restart-safe authorities.
 
@@ -189,7 +199,7 @@ Restrict access to logs because correlation identifiers and tenant metadata are 
 
 A malformed or unauthorized queue envelope is dead-lettered immediately.
 A transient queue outage abandons the peek-locked message and leaves the request durable for retry.
-A connector restart replays the local request record and the deterministic inbox note rather than creating new work.
+A connector restart replays the payload-free approval notification, and an interrupted approval replays its separate deterministic approved note rather than creating duplicate work.
 A result whose Teams post may have succeeded before a crash is dead-lettered as uncertain and requires conversation-level reconciliation.
 The cloud worker and Mac connector drain multiple bounded dead-letter batches with bounded settlement concurrency every ten minutes and delete messages older than the configured message-retention window.
 
@@ -233,5 +243,5 @@ az bicep build --file integrations/teams/infra/main.bicep
 cd integrations/teams && npm audit --omit=dev
 ```
 
-The fixture suite covers tenant and sender binding, mention parsing, duplicate and reordered delivery, restart replay, queue outage recovery, throttling, malformed envelopes, self-reply suppression, general request delivery, privileged-request refusal, secret withholding, and exact `replyToId` correlation.
+The fixture suite covers tenant and sender binding, mention parsing, duplicate and reordered delivery, restart replay, queue outage recovery, authorized-source throttling, malformed envelopes, self-reply suppression, exact local approval before general request delivery, privileged-request refusal, secret withholding, and exact `replyToId` correlation.
 No test provisions Azure resources, registers an app, obtains consent, issues a certificate, publishes a Teams package, or sends a Teams message.

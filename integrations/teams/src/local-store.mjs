@@ -389,6 +389,57 @@ export class LocalRequestStore {
     });
   }
 
+  async beginApproval(requestId, approvedText) {
+    await this.ensure();
+    return this.withRequestLock(requestId, async () => {
+      const record = await this.get(requestId);
+      if (!record?.request) throw new Error("no local Teams request has that request id");
+      if (record.request.command.kind !== "work") throw new Error("status requests do not require local approval");
+      if (Date.now() >= Date.parse(record.request.resultDeadline)) {
+        throw new Error("the Teams request result publication deadline has passed");
+      }
+      if (approvedText !== record.request.command.text) {
+        throw new Error("local approval text does not exactly match the Teams request");
+      }
+      if (record.approvalStatus === "approved") {
+        if (!record.approvedInboxId) throw new Error("approved Teams request is missing its inbox identity");
+        return { approved: false, record };
+      }
+      if (!record.reviewInboxId || !["pending", "delivering"].includes(record.approvalStatus)) {
+        throw new Error("the Teams request is not awaiting local approval");
+      }
+      const updated = {
+        ...record,
+        approvalStatus: "delivering",
+        approvalGrantedAt: record.approvalGrantedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await this.writeRecord("request", requestId, updated);
+      return { approved: true, record: updated };
+    });
+  }
+
+  async finishApproval(requestId, inboxId) {
+    await this.ensure();
+    return this.withRequestLock(requestId, async () => {
+      const record = await this.get(requestId);
+      if (!record?.request) throw new Error("no local Teams request has that request id");
+      if (record.approvalStatus === "approved") {
+        if (record.approvedInboxId !== inboxId) throw new Error("Teams approval inbox identity changed");
+        return record;
+      }
+      if (record.approvalStatus !== "delivering") throw new Error("the Teams request has no approval delivery in progress");
+      const updated = {
+        ...record,
+        approvalStatus: "approved",
+        approvedInboxId: inboxId,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.writeRecord("request", requestId, updated);
+      return updated;
+    });
+  }
+
   async queueResult(candidate, send) {
     validateResult(candidate);
     await this.ensure();
@@ -396,6 +447,11 @@ export class LocalRequestStore {
       let requestRecord = await this.get(candidate.requestId);
       if (!requestRecord?.request || !sameSource(requestRecord.request.source, candidate.source)) {
         throw new Error("result does not match its local Teams request");
+      }
+      if (["completed", "failed"].includes(candidate.outcome)
+          && requestRecord.request.command.kind === "work"
+          && requestRecord.approvalStatus !== "approved") {
+        throw new Error("Teams request requires trusted-local approval before terminal result publication");
       }
       const hasTerminalResult = requestRecord.terminalResultId
         || (requestRecord.state === "result-queued" && requestRecord.outcome !== "accepted");

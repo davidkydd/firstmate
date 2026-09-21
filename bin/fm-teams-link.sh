@@ -48,6 +48,12 @@ cmd_link() {
   valid_request "$request" || die "invalid Teams request id"
   valid_task "$task" || die "invalid task id"
   [ -f "$STATE/teams/requests/$request.json" ] || die "Teams request is not captured in this home: $request"
+  node -e '
+    const fs = require("node:fs");
+    const record = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (record?.approvalStatus !== "approved") process.exit(1);
+  ' "$STATE/teams/requests/$request.json" \
+    || die "Teams request requires trusted-local approval before task binding: $request"
   meta="$STATE/$task.meta"
   [ -f "$meta" ] || die "task metadata not found: $task"
   lock=$(fm_meta_lock_path "$meta") || die "could not resolve the task metadata lock"

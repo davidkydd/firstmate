@@ -15,7 +15,7 @@
   },
   "description": {
     "short": "Send bounded requests to a trusted Firstmate session.",
-    "full": "A single-tenant bot that stores validated Teams requests in Azure and relays them to one outbound-only Firstmate connector. Privileged actions still require confirmation in the trusted local session."
+    "full": "A single-tenant bot that stores validated Teams requests in Azure and relays them to one outbound-only Firstmate connector. General requests require exact approval in the trusted local session before handling."
   },
   "icons": {
     "outline": "outline.png",
@@ -36,7 +36,7 @@
           "commands": [
             {
               "title": "/firstmate",
-              "description": "Send a status query or ordinary reversible request."
+              "description": "Send a status query or request for trusted-local approval."
             }
           ]
         },
@@ -45,7 +45,7 @@
           "commands": [
             {
               "title": "/firstmate",
-              "description": "Mention Firstmate, then send a status query or ordinary reversible request."
+              "description": "Mention Firstmate, then send a status query or request for trusted-local approval."
             }
           ]
         }

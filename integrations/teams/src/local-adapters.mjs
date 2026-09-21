@@ -58,26 +58,43 @@ export class FirstmateInboxAdapter {
     this.command = path.join(root, "bin", "fm-inbox.sh");
   }
 
-  async deliver(request) {
+  async deliver(source, requestId, body) {
     const output = await runFile(
       this.command,
-      ["external-note", "teams", request.requestId, "-"],
-      { env: { ...process.env, FM_HOME: this.home }, stdin: request.command.text },
+      ["external-note", source, requestId, "-"],
+      { env: { ...process.env, FM_HOME: this.home }, stdin: body },
     );
     const match = /^(?:already-)?queued\s+(\S+)$/m.exec(output);
     if (!match) throw new Error("fm-inbox.sh did not return a durable note id");
     return match[1];
   }
 
-  async purgeHandled(retentionDays, limit = 1000) {
-    const output = await runFile(
-      this.command,
-      ["purge-external-handled", "teams", String(retentionDays), String(limit)],
-      { env: { ...process.env, FM_HOME: this.home }, timeoutMilliseconds: 5 * 60_000 },
+  async requestApproval(requestId) {
+    return this.deliver(
+      "teams-review",
+      requestId,
+      `Teams request ${requestId} is awaiting trusted-local approval. Review the original Teams message and repeat its exact request in this local session to approve it.`,
     );
-    const match = /^purged\s+(\d+)$/m.exec(output);
-    if (!match) throw new Error("fm-inbox.sh did not return a handled-note purge count");
-    return Number(match[1]);
+  }
+
+  async deliverApproved(request) {
+    return this.deliver("teams", request.requestId, request.command.text);
+  }
+
+  async purgeHandled(retentionDays, limit = 1000) {
+    let removed = 0;
+    for (const source of ["teams", "teams-review"]) {
+      if (removed >= limit) break;
+      const output = await runFile(
+        this.command,
+        ["purge-external-handled", source, String(retentionDays), String(limit - removed)],
+        { env: { ...process.env, FM_HOME: this.home }, timeoutMilliseconds: 5 * 60_000 },
+      );
+      const match = /^purged\s+(\d+)$/m.exec(output);
+      if (!match) throw new Error("fm-inbox.sh did not return a handled-note purge count");
+      removed += Number(match[1]);
+    }
+    return removed;
   }
 }
 
