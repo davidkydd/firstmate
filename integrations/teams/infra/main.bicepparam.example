@@ -1,0 +1,20 @@
+using './main.bicep'
+
+param namePrefix = 'fmteamsprod'
+param location = 'westus3'
+param botAppId = '00000000-0000-0000-0000-000000000000'
+param botRecipientId = '28:00000000-0000-0000-0000-000000000000'
+param tenantId = '00000000-0000-0000-0000-000000000000'
+param macConnectorPrincipalId = '00000000-0000-0000-0000-000000000000'
+param macConnectorPrincipalType = 'User'
+param allowedSenderObjectIds = '00000000-0000-0000-0000-000000000000'
+param allowedConversationIds = 'replace-with-approved-teams-conversation-id'
+param containerRegistryName = 'approvedregistry'
+param containerImageRepository = 'firstmate-teams'
+param containerImageDigest = '0000000000000000000000000000000000000000000000000000000000000000'
+param certificateName = 'firstmate-teams-bot-sni'
+param enableCloudService = false
+param messageRetentionDays = 7
+param resultPublicationDays = 22
+param diagnosticRetentionDays = 90
+param alertActionGroupId = ''

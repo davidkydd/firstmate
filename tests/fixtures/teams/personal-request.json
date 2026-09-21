@@ -1,0 +1,28 @@
+{
+  "type": "message",
+  "id": "activity-personal-001",
+  "timestamp": "2026-09-21T05:00:00.000Z",
+  "serviceUrl": "https://smba.trafficmanager.net/amer/",
+  "channelId": "msteams",
+  "from": {
+    "id": "29:user-channel-id",
+    "aadObjectId": "bbbbbbbb-1111-4111-8111-111111111111"
+  },
+  "recipient": {
+    "id": "28:bot-channel-id"
+  },
+  "conversation": {
+    "id": "a:personal-conversation",
+    "conversationType": "personal",
+    "tenantId": "aaaaaaaa-2222-4222-8222-222222222222"
+  },
+  "channelData": {
+    "tenant": {
+      "id": "aaaaaaaa-2222-4222-8222-222222222222"
+    }
+  },
+  "text": "/firstmate summarize the open work",
+  "textFormat": "plain",
+  "attachments": [],
+  "entities": []
+}

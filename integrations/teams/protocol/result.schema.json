@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firstmate.local/schemas/teams/result.v1.json",
+  "title": "Firstmate Teams result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "resultId", "requestId", "createdAt", "outcome", "terminal", "source", "text"],
+  "properties": {
+    "schema": { "const": "firstmate.teams.result.v1" },
+    "resultId": { "type": "string", "pattern": "^tr_[a-f0-9]{64}$" },
+    "requestId": { "type": "string", "pattern": "^tm_[a-f0-9]{64}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["accepted", "status", "completed", "refused", "failed"] },
+    "terminal": { "type": "boolean" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "source": { "$ref": "request.schema.json#/$defs/source" }
+  }
+}

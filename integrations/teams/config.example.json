@@ -1,0 +1,17 @@
+{
+  "schema": "firstmate.teams.config.v1",
+  "enabled": false,
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "allowedSenderObjectIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "allowedConversationIds": [
+    "replace-with-approved-teams-conversation-id"
+  ],
+  "serviceBusNamespace": "approved-namespace-name",
+  "requestQueue": "teams-requests-v1",
+  "resultQueue": "teams-results-v1",
+  "credential": "azure-cli",
+  "retentionDays": 30,
+  "messageRetentionDays": 7
+}

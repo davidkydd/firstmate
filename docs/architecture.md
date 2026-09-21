@@ -403,6 +403,11 @@ Because a terminal event's id is derived from its identity tuple rather than gen
 Reconciliation rides the existing relay poll and the session-start digest instead of a new watcher, daemon, or timer, and both are gated on the same `.env` activation contract so a home that never opted into the relay executes none of it.
 The [Relay configuration reference](configuration.md#promised-public-replies-statepublic-followup) owns the operator-facing contract, and the `fmx-respond` skill owns the procedure.
 
+## Optional Microsoft Teams bridge
+
+The disabled-by-default single-tenant Teams bridge accepts bounded bot commands in Azure, carries typed request and result envelopes over durable queues, and reaches the Mac only through its outbound connector and the existing durable inbox owner.
+[`docs/teams-architecture.md`](teams-architecture.md) owns its component boundaries, protocol, idempotence, authority ceiling, and reply correlation, while [`docs/teams-integration.md`](teams-integration.md) owns setup and rollout.
+
 ## Project memory belongs to projects
 
 Durable project-intrinsic agent knowledge lives in each project's committed `AGENTS.md`, with `CLAUDE.md` as a real `@AGENTS.md` import pointer.
