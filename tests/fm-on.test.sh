@@ -214,7 +214,7 @@ pass "fm-on rejects invalid dead-peer settings before launching ssh"
 mkdir -p "$LOCAL_HOME/config"
 cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
 schema=fm-remote-transports.v1
-route another-devbox devbox-wsl
+route another-devbox devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 EOF
 : > "$SSH_LOG"
 fm_on ios fm-probe-two.sh >/dev/null
@@ -225,7 +225,7 @@ pass "a configured Dev Box profile leaves other Linux and macOS SSH aliases unch
 
 cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
 schema=fm-remote-transports.v1
-route remote-mac devbox-wsl
+route remote-mac devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 EOF
 : > "$SSH_LOG"
 fm_on ios fm-probe-two.sh >/dev/null
@@ -243,26 +243,27 @@ DEVBOX_DOCTOR_RC=$?
 set -e
 [ "$DEVBOX_DOCTOR_RC" -ne 0 ] || fail "the non-WSL fixture unexpectedly passed Dev Box diagnostics"
 assert_contains "$DEVBOX_DOCTOR_OUT" 'transport-profile=devbox-wsl' "fm-on did not bind the configured profile to the remote doctor"
+assert_contains "$DEVBOX_DOCTOR_OUT" 'subscription=82acd5bb-4206-47d4-9c12-a65db028483d' "fm-on did not pin the configured Azure subscription in the remote doctor"
 assert_contains "$DEVBOX_DOCTOR_OUT" 'check devbox-wsl-platform=human:' "the Dev Box doctor did not reject a route that missed WSL2"
 pass "the Dev Box profile selects WSL2 readiness diagnostics on the fixed doctor command"
 
 SSH_CALLS_BEFORE_INVALID=$(cat "$SSH_COUNT")
 cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
 schema=fm-remote-transports.v1
-route remote-mac devbox-wsl -oProxyCommand=touch-injected
+route remote-mac devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d -oProxyCommand=touch-injected
 EOF
 set +e
 MALFORMED_PROFILE_OUT=$(fm_on ios fm-probe-two.sh 2>&1)
 MALFORMED_PROFILE_RC=$?
 set -e
 [ "$MALFORMED_PROFILE_RC" -ne 0 ] || fail "a transport profile with an injected SSH option was accepted"
-assert_contains "$MALFORMED_PROFILE_OUT" "must be 'route <ssh-alias> devbox-wsl'" "the malformed profile did not report its exact schema"
+assert_contains "$MALFORMED_PROFILE_OUT" "must be 'route <ssh-alias> devbox-wsl subscription=<azure-subscription-uuid>'" "the malformed profile did not report its exact schema"
 [ "$(cat "$SSH_COUNT")" -eq "$SSH_CALLS_BEFORE_INVALID" ] || fail "a malformed transport profile launched ssh"
 
 cat > "$LOCAL_HOME/config/remote-transports" <<'EOF'
 schema=fm-remote-transports.v1
-route remote-mac devbox-wsl
-route remote-mac devbox-wsl
+route remote-mac devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
+route remote-mac devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 EOF
 set +e
 DUPLICATE_PROFILE_OUT=$(fm_on ios fm-probe-two.sh 2>&1)

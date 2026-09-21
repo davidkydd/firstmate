@@ -2246,7 +2246,7 @@ test_remote_unreachable_is_unknown_remote_not_dead() {
   mkdir -p "$d/config"
   cat > "$d/config/remote-transports" <<'EOF'
 schema=fm-remote-transports.v1
-route remote-mac devbox-wsl
+route remote-mac devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 EOF
   printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
   out=$(FM_FAKE_SSH_RC=255 run_remote_crew_state "$d" rsm); rc=$?

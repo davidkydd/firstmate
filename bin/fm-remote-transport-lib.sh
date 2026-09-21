@@ -5,7 +5,7 @@
 # config/remote-transports is optional and primary-local.  Its exact format is:
 #
 #   schema=fm-remote-transports.v1
-#   route <ssh-alias> devbox-wsl
+#   route <ssh-alias> devbox-wsl subscription=<azure-subscription-uuid>
 #
 # Blank lines and lines beginning with # are ignored after the schema line.
 # The profile does not contain an endpoint, command, credential, or SSH option:
@@ -17,6 +17,7 @@
 FM_REMOTE_TRANSPORT_CONFIG_FILE=remote-transports
 FM_REMOTE_TRANSPORT_SCHEMA=fm-remote-transports.v1
 FM_REMOTE_TRANSPORT_PROFILE=ssh
+FM_REMOTE_TRANSPORT_SUBSCRIPTION=
 FM_REMOTE_TRANSPORT_ERROR=
 FM_REMOTE_TRANSPORT_DEVBOX_CONNECT_TIMEOUT=10
 FM_REMOTE_TRANSPORT_DEVBOX_CONNECTION_ATTEMPTS=2
@@ -36,8 +37,9 @@ fm_remote_transport_link_count() {
 
 fm_remote_transport_config_load() { # <config-dir> <ssh-alias>
   local config_dir=$1 wanted_alias=$2 path links bytes line line_no=0 schema_seen=0
-  local alias profile extra route_count=0 seen=' '
+  local alias profile subscription extra route_count=0 seen=' '
   FM_REMOTE_TRANSPORT_PROFILE=ssh
+  FM_REMOTE_TRANSPORT_SUBSCRIPTION=
   FM_REMOTE_TRANSPORT_ERROR=
 
   case "$wanted_alias" in
@@ -106,8 +108,9 @@ fm_remote_transport_config_load() { # <config-dir> <ssh-alias>
     case "$line" in ''|'#'*) continue ;; esac
     alias=
     profile=
+    subscription=
     extra=
-    read -r alias profile extra <<EOF
+    read -r alias profile subscription extra <<EOF
 ${line#route }
 EOF
     case "$line" in route\ *) ;; *)
@@ -125,9 +128,18 @@ EOF
       return 1
     }
     [ "$profile" = devbox-wsl ] && [ -z "$extra" ] || {
-      fm_remote_transport_fail "$path line $line_no must be 'route <ssh-alias> devbox-wsl'"
+      fm_remote_transport_fail "$path line $line_no must be 'route <ssh-alias> devbox-wsl subscription=<azure-subscription-uuid>'"
       return 1
     }
+    case "$subscription" in
+      subscription=[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+      *)
+        fm_remote_transport_fail "$path line $line_no has an invalid Azure subscription UUID"
+        return 1
+        ;;
+    esac
+    subscription=${subscription#subscription=}
+    subscription=$(printf '%s' "$subscription" | tr 'A-F' 'a-f')
     case "$seen" in *" $alias "*)
       fm_remote_transport_fail "$path repeats SSH alias $alias"
       return 1
@@ -141,6 +153,7 @@ EOF
     }
     if [ "$alias" = "$wanted_alias" ]; then
       FM_REMOTE_TRANSPORT_PROFILE=$profile
+      FM_REMOTE_TRANSPORT_SUBSCRIPTION=$subscription
     fi
   done < "$path"
 

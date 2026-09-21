@@ -192,25 +192,79 @@ The SSH alias remains the `host:` value in `data/secondmates.md`, so no route-sc
 
 ```text
 schema=fm-remote-transports.v1
-route fm-devbox-wsl devbox-wsl
+route fm-devbox-wsl devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 ```
 
 The profile adds `BatchMode=yes`, `StrictHostKeyChecking=yes`, a 10-second connection and handshake timeout, and two pre-session connection attempts.
+It also pins the workload authentication checks to Microsoft New Zealand Sandbox subscription `82acd5bb-4206-47d4-9c12-a65db028483d`.
 The normal server keepalives still bound detection after connection.
 No command is retried after the fixed remote entrypoint may have started, because replaying a mutation after a dropped tunnel would be unsafe.
+
+### Host-local identity and permission separation
+
+Keep interactive staff sign-in and unattended workload authentication as two separate principals and two separate local profile stores.
+The remote transport itself needs no Microsoft Graph application permission and never copies a token, browser profile, Azure CLI profile, Windows App profile, VS Code profile, or Dev Tunnels credential between the Mac, Windows, and WSL2.
+Microsoft documents `Dev Box User` as the developer role at project scope in [Azure role-based access control in Microsoft Dev Box](https://learn.microsoft.com/azure/dev-box/concept-dev-box-role-based-access-control), private same-account tunnel authentication in [Dev Tunnels security](https://learn.microsoft.com/azure/developer/dev-tunnels/security), and credential-free `az login --identity` in [Azure CLI managed identity authentication](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-managed-identity).
+
+| Plane | Principal and profile | Azure RBAC | App permission or consent |
+| --- | --- | --- | --- |
+| Interactive Dev Box and tunnel administration | A staff user signed in only in the Dev Box's Windows interactive session, with its browser, Windows App, VS Code, and Dev Tunnels profiles stored on that Dev Box | `Dev Box User` at the exact `Microsoft.DevCenter/projects/<project>` resource in subscription `82acd5bb-4206-47d4-9c12-a65db028483d` | Dev Tunnels service sign-in for that user only; Firstmate requires no custom app registration, Microsoft Graph delegated scope, tenant-wide admin consent, or application permission |
+| Unattended Firstmate work in WSL2 | A managed identity when the host exposes one, or a federated workload identity, authenticated only in `~/.config/firstmate/azure-workload` | `Reader` at `/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d` | None for the remote-secondmate transport; a project that calls another API must obtain a separately reviewed least-privilege application assignment rather than reuse staff consent |
+
+Do not use a staff user's default `~/.azure` cache for the unattended worker.
+Do not copy the Mac's Azure CLI directory, browser data, cookies, refresh tokens, Dev Tunnels profile, or SSH agent into the Dev Box.
+Do not expose a Windows UI profile through SSH, a filesystem mount, profile sync, or the tunnel.
+The Mac may authenticate its own local Dev Tunnels client to connect, but that local CLI credential is not the Dev Box's Windows UI profile and is never forwarded to WSL2.
+
+Create `~/.config/firstmate/devbox-auth-matrix.json` inside WSL2 as a credential-free declaration of the two planes.
+Keep the exact fixed values below and replace only the project resource ID, tenant UUID, and workload principal object UUID placeholders.
+The project scope must remain inside the pinned subscription.
+
+```json
+{
+  "schema": "fm-devbox-auth-matrix.v1",
+  "subscription": "82acd5bb-4206-47d4-9c12-a65db028483d",
+  "interactive": {
+    "principalType": "staff-user",
+    "rbac": {
+      "role": "Dev Box User",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d/resourceGroups/<devbox-rg>/providers/Microsoft.DevCenter/projects/<project>"
+    },
+    "delegatedAppPermissions": "dev-tunnels-service-sign-in-only",
+    "uiProfile": "windows-host-local"
+  },
+  "workload": {
+    "principalType": "managed-or-workload-identity",
+    "tenantId": "<tenant-uuid>",
+    "principalObjectId": "<principal-object-uuid>",
+    "rbac": {
+      "role": "Reader",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d"
+    },
+    "applicationPermissions": "none"
+  }
+}
+```
+
+Authenticate the workload identity into the isolated profile without a client secret.
+Use `AZURE_CONFIG_DIR="$HOME/.config/firstmate/azure-workload" az login --identity` only when managed identity is actually available to WSL2, or use the organization's approved short-lived federated workload flow.
+Never run an interactive staff `az login` into that directory, and never put a client secret, certificate private key, federated token, or access token in the matrix.
+The doctor never logs in, grants a role, or gives consent.
+It validates the matrix, requires the isolated Azure account to report `servicePrincipal`, verifies the pinned subscription and tenant, and uses `az role assignment list --assignee-object-id` to prove the declared principal has an exact `Reader` assignment at the subscription scope without a Microsoft Graph lookup.
 
 ### Readiness and lifecycle
 
 Run the normal doctor through the configured route.
-The profile makes it additionally prove that the endpoint is WSL2, systemd is PID 1, `ssh.service` or `sshd.service` is active and enabled, and the SSH path reached the fixed entrypoint inside Linux.
+The profile makes it additionally prove that the endpoint is WSL2, systemd is PID 1, `ssh.service` or `sshd.service` is active and enabled, the SSH path reached the fixed entrypoint inside Linux, the credential-free identity matrix matches the pinned subscription, the isolated Azure CLI account is a managed or workload identity, and that principal has the declared subscription Reader assignment.
 
 ```sh
 bin/fm-on.sh <secondmate-id> fm-remote-doctor.sh
 ```
 
-Those are the Windows-to-WSL facts visible from the Linux endpoint.
-The doctor cannot prove the Dev Box pool's stop schedule, Scheduled Task health, Windows or Hyper-V firewall policy, or the future lifetime of the tunnel-host process, so the operator must check those on Windows.
-`--fix` does not install WSL, edit Windows networking, enable sshd, create a tunnel, or change Azure lifecycle state.
+Those are the Windows-to-WSL and unattended-identity facts visible from the Linux endpoint.
+The doctor cannot inspect or copy the Windows interactive profile, so the operator must verify the staff user's project-level Dev Box User assignment and Dev Tunnels sign-in in that session.
+It also cannot prove the Dev Box pool's stop schedule, Scheduled Task health, Windows or Hyper-V firewall policy, or the future lifetime of the tunnel-host process, so the operator must check those on Windows.
+`--fix` does not install WSL, edit Windows networking, enable sshd, authenticate Azure, grant RBAC, consent an app, create a tunnel, or change Azure lifecycle state.
 
 A stopped or hibernated Dev Box and an unavailable local or remote tunnel both surface as SSH exit 255.
 Firstmate therefore preserves the route and classifies the remote endpoint as unknown, never dead, and never replaces it with a local mate.

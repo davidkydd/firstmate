@@ -27,8 +27,8 @@
 # command under an empty environment with only its fixed runtime values.
 #
 # An optional config/remote-transports file may select the devbox-wsl profile
-# for an SSH alias. The alias still owns the stable forwarded endpoint and all
-# identity fields. The profile adds fixed BatchMode/strict-host-key settings, a
+# for an SSH alias and pin its Azure subscription UUID. The alias still owns
+# the stable forwarded endpoint and all identity fields. The profile adds fixed BatchMode/strict-host-key settings, a
 # 10-second connect/handshake timeout, and two pre-session connection attempts.
 # It never retries after a session may have started, because that could replay a
 # remote mutation whose completion is unknown. Routes absent from the file keep
@@ -120,7 +120,7 @@ if [ "$COMMAND" = fm-remote-doctor.sh ] && [ "$FM_REMOTE_TRANSPORT_PROFILE" = de
     [ "$arg" != --transport-profile ] \
       || die "--transport-profile is selected by config/remote-transports and cannot be passed directly"
   done
-  COMMAND_ARGS+=(--transport-profile devbox-wsl)
+  COMMAND_ARGS+=(--transport-profile devbox-wsl --subscription "$FM_REMOTE_TRANSPORT_SUBSCRIPTION")
 fi
 
 ROOT_B64=$(printf '%s' "$ROOT" | encode_base64)

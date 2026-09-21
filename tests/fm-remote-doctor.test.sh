@@ -813,10 +813,56 @@ case "${1:-}:${2:-}:${4:-}" in
   *) exit 1 ;;
 esac
 SH
-chmod +x "$CASE_BIN/uname" "$CASE_BIN/ps" "$CASE_BIN/systemctl"
-FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+cat > "$CASE_BIN/stat" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -c ] && [ "${2:-}" = %h ]; then printf '1\n'; exit 0; fi
+exec /usr/bin/stat "$@"
+SH
+cat > "$CASE_BIN/az" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_STATE/az.log"
+case "${1:-}:${2:-}" in
+  account:show)
+    if [ -f "$FM_FAKE_STATE/staff-account" ]; then account_type=user; else account_type=servicePrincipal; fi
+    printf '{"id":"82acd5bb-4206-47d4-9c12-a65db028483d","tenantId":"11111111-2222-3333-4444-555555555555","user":{"type":"%s"}}\n' "$account_type"
+    ;;
+  role:assignment)
+    printf '[{"roleDefinitionName":"Reader","scope":"/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d"}]\n'
+    ;;
+  *) exit 1 ;;
+esac
+SH
+mkdir -p "$CASE_HOME/.config/firstmate/azure-workload"
+cat > "$CASE_HOME/.config/firstmate/devbox-auth-matrix.json" <<'JSON'
+{
+  "schema": "fm-devbox-auth-matrix.v1",
+  "subscription": "82acd5bb-4206-47d4-9c12-a65db028483d",
+  "interactive": {
+    "principalType": "staff-user",
+    "rbac": {
+      "role": "Dev Box User",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d/resourceGroups/rg-devbox/providers/Microsoft.DevCenter/projects/nz-sandbox"
+    },
+    "delegatedAppPermissions": "dev-tunnels-service-sign-in-only",
+    "uiProfile": "windows-host-local"
+  },
+  "workload": {
+    "principalType": "managed-or-workload-identity",
+    "tenantId": "11111111-2222-3333-4444-555555555555",
+    "principalObjectId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "rbac": {
+      "role": "Reader",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d"
+    },
+    "applicationPermissions": "none"
+  }
+}
+JSON
+chmod +x "$CASE_BIN/uname" "$CASE_BIN/ps" "$CASE_BIN/systemctl" "$CASE_BIN/stat" "$CASE_BIN/az"
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl --subscription 82acd5bb-4206-47d4-9c12-a65db028483d
 expect_code 0 "$DOCTOR_RC" "a ready WSL2 fixture was rejected"
 assert_contains "$DOCTOR_OUT" 'transport-profile=devbox-wsl' "the selected transport profile was not reported"
+assert_contains "$DOCTOR_OUT" 'subscription=82acd5bb-4206-47d4-9c12-a65db028483d' "the selected Azure subscription was not reported"
 assert_contains "$DOCTOR_OUT" 'check devbox-wsl-platform=ok: WSL2 kernel 5.15.167.4-microsoft-standard-WSL2' \
   "the doctor did not confirm the WSL2 kernel"
 assert_contains "$DOCTOR_OUT" 'check devbox-wsl-systemd=ok: PID 1 is systemd' \
@@ -825,10 +871,29 @@ assert_contains "$DOCTOR_OUT" 'check devbox-wsl-sshd=ok: ssh.service is active a
   "the doctor did not confirm persistent sshd readiness"
 assert_contains "$DOCTOR_OUT" "check devbox-wsl-route=ok: the configured SSH route reached Firstmate's fixed entrypoint inside Linux" \
   "the doctor did not confirm that the forwarded route landed inside Linux"
-pass "the Dev Box profile confirms WSL2, systemd, sshd, and the live forwarded route"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-matrix=ok:' "the host-local identity matrix was not validated"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-interactive=ok:' "the staff identity and host-local UI policy were not validated"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-workload=ok: isolated service-principal context targets subscription 82acd5bb-4206-47d4-9c12-a65db028483d' \
+  "the isolated managed or workload identity was not validated"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-rbac=ok: workload principal aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee has Reader' \
+  "the workload Reader assignment was not validated"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-app-permissions=ok:' "the explicit no-application-permission boundary was not validated"
+assert_grep '--subscription 82acd5bb-4206-47d4-9c12-a65db028483d' "$CASE_STATE/az.log" \
+  "the Azure account probe did not pin the configured subscription"
+assert_grep '--assignee-object-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' "$CASE_STATE/az.log" \
+  "the RBAC probe did not use the declared workload principal"
+pass "the Dev Box profile confirms WSL2, isolated workload authentication, RBAC, and the live forwarded route"
+
+touch "$CASE_STATE/staff-account"
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl --subscription 82acd5bb-4206-47d4-9c12-a65db028483d
+expect_code 1 "$DOCTOR_RC" "an interactive staff Azure profile was accepted as the unattended workload identity"
+assert_contains "$DOCTOR_OUT" 'check devbox-auth-workload=human:' \
+  "the doctor did not keep interactive delegated sign-in separate from workload identity"
+rm -f "$CASE_STATE/staff-account"
+pass "the Dev Box doctor refuses an interactive staff Azure profile for unattended work"
 
 touch "$CASE_STATE/sshd-disabled"
-FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl --subscription 82acd5bb-4206-47d4-9c12-a65db028483d
 expect_code 1 "$DOCTOR_RC" "a WSL2 fixture with disabled sshd was reported ready"
 assert_contains "$DOCTOR_OUT" 'check devbox-wsl-sshd=human: ssh.service is active=active and enabled=disabled' \
   "the disabled sshd service did not produce an operator-owned readiness gap"
@@ -836,7 +901,7 @@ assert_contains "$DOCTOR_OUT" 'enable and start ssh.service in WSL2' \
   "the disabled sshd diagnostic did not include its bounded operator action"
 rm -f "$CASE_STATE/sshd-disabled"
 touch "$CASE_STATE/no-systemd"
-FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl
+FM_REMOTE_DOCTOR_BOOTSTRAP=1 doctor --transport-profile devbox-wsl --subscription 82acd5bb-4206-47d4-9c12-a65db028483d
 expect_code 1 "$DOCTOR_RC" "a WSL2 fixture without systemd PID 1 was reported ready"
 assert_contains "$DOCTOR_OUT" 'check devbox-wsl-systemd=human:' \
   "the missing systemd prerequisite was not diagnosed"

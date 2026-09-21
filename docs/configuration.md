@@ -281,16 +281,16 @@ It is not inherited into secondmate homes because it describes how this primary 
 When the file is absent, every remote route keeps the existing generic SSH behavior.
 
 The first line must be the exact schema marker below.
-Each later nonblank, noncomment line binds one SSH alias to the only current profile, `devbox-wsl`.
+Each later nonblank, noncomment line binds one SSH alias to the only current profile, `devbox-wsl`, and pins one canonical Azure subscription UUID for that host's workload identity.
 Aliases use the same `[A-Za-z0-9._-]+` grammar as remote route records, each alias may appear once, and the file may contain at most 128 routes and 65,536 bytes.
 Unknown records, extra fields, symlinks, hard links, special files, unsafe aliases, and malformed schema markers are rejected before SSH starts.
 
 ```text
 schema=fm-remote-transports.v1
-route fm-devbox-wsl devbox-wsl
+route fm-devbox-wsl devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
 ```
 
-The `devbox-wsl` profile keeps the route's SSH alias as the destination and adds fixed noninteractive authentication, strict host-key checking, a 10-second connection and handshake timeout, and two connection attempts before a session starts.
+The `devbox-wsl` profile keeps the route's SSH alias as the destination, passes the validated subscription only to the fixed readiness command, and adds fixed noninteractive authentication, strict host-key checking, a 10-second connection and handshake timeout, and two connection attempts before a session starts.
 It never retries after the fixed remote entrypoint may have started, so an interrupted mutation still has unknown completion and requires same-host reconciliation.
 The profile also selects the WSL2-specific checks in `fm-remote-doctor.sh`.
 [`remote-secondmates.md`](remote-secondmates.md#azure-dev-box-with-wsl2) owns the one-time Windows, WSL2, SSH, and tunnel setup.
