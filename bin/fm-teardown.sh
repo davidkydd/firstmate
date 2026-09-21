@@ -1200,6 +1200,22 @@ remove_kimi_turnend_auth() {
   rm -f -- "$path"
 }
 
+remove_generated_write_hook() { # <state> <id> <worktree>
+  local state_dir=$1 id=$2 worktree=$3 kind marker recorded expected
+  for kind in codex cursor; do
+    marker="$state_dir/$id.$kind-write-hook-generated"
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    IFS= read -r recorded < "$marker" || [ -n "$recorded" ] || return 1
+    expected="$worktree/.$kind/hooks.json"
+    [ "$recorded" = "$expected" ] || {
+      echo "error: generated $kind write-hook marker does not match task $id worktree" >&2
+      return 1
+    }
+    rm -f -- "$expected" "$marker" || return 1
+    rmdir "$worktree/.$kind" 2>/dev/null || true
+  done
+}
+
 retire_busy_state() {
   local state_dir=$1 id=$2 gen=${3:-}
   if [ -n "$gen" ]; then
@@ -3080,6 +3096,7 @@ cleanup_firstmate_home_children() {
         fi
       fi
     fi
+    remove_generated_write_hook "$sub_state" "$child_id" "$child_wt" || return 1
     remove_grok_turnend_auth "$sub_state" "$child_id" || return 1
     remove_kimi_turnend_auth "$sub_state" "$child_id" || return 1
     remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
@@ -3094,8 +3111,9 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.pi-ext.ts" "$sub_state/$child_id.omp-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
       "$sub_state/$child_id.muse-session" "$sub_state/$child_id.muse-session-current" \
-      "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.reconcile-nudged" \
-      "$sub_state/.$child_id.branch-outcome-index"
+      "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.write-boundary" \
+      "$sub_state/$child_id.codex-write-hook-generated" "$sub_state/$child_id.cursor-write-hook-generated" \
+      "$sub_state/$child_id.reconcile-nudged" "$sub_state/.$child_id.branch-outcome-index"
   done
 }
 
@@ -3500,6 +3518,7 @@ if [ "$KIND" = secondmate ]; then
     || { echo "error: receiver wake cleanup failed; preserving the secondmate route for retry" >&2; exit 1; }
   remove_secondmate_registry_entry "$ID"
 fi
+remove_generated_write_hook "$STATE" "$ID" "$WT" || exit 1
 remove_grok_turnend_auth "$STATE" "$ID" || exit 1
 remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
@@ -3513,7 +3532,9 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.progress" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.omp-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
-  "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
+  "$STATE/$ID.write-boundary" "$STATE/$ID.codex-write-hook-generated" \
+  "$STATE/$ID.cursor-write-hook-generated" "$STATE/$ID.control-relaunch" \
+  "$STATE/$ID.control-relaunch.meta-prior" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note" \
   "$STATE/$ID.reconcile-nudged" "$STATE/$ID.gemini-settings.json" \
   "$STATE/.$ID.branch-outcome-index"

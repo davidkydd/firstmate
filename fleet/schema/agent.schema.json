@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://firstmate/fleet/schema/agent.schema.json",
+  "title": "Firstmate persistent secondmate role definition",
+  "type": "object",
+  "required": [
+    "id",
+    "archetype",
+    "charterSummary",
+    "routingScope",
+    "charter",
+    "projects",
+    "assets",
+    "actions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "rename": {
+      "type": "null"
+    },
+    "archetype": {
+      "const": "secondmate"
+    },
+    "charterSummary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "routingScope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "charter": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projects": {
+      "enum": ["none", "dynamic"]
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._/-]+$"
+      }
+    },
+    "actions": {
+      "type": "object",
+      "required": ["reviewPost", "vote", "mergeAdo"],
+      "additionalProperties": false,
+      "properties": {
+        "reviewPost": {
+          "enum": ["explicit-only", "not-applicable"]
+        },
+        "vote": {
+          "const": "never"
+        },
+        "mergeAdo": {
+          "const": "never"
+        }
+      }
+    },
+    "periodic": {
+      "type": "object",
+      "required": ["cadenceSeconds", "watchFile", "watchSections"],
+      "additionalProperties": false,
+      "properties": {
+        "cadenceSeconds": {
+          "type": "integer",
+          "minimum": 60
+        },
+        "watchFile": {
+          "type": "string",
+          "pattern": "^data/[A-Za-z0-9._/-]+$"
+        },
+        "watchSections": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^|\\r\\n]+$"
+          }
+        }
+      }
+    }
+  }
+}

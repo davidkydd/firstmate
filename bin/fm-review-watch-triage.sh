@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deterministic triage for the fm-pr-review secondmate's review-followup watch.
-# The panel keeps a durable "## Reviewed / watching" list in its home
+# Deterministic triage for the prreview secondmate's review-followup watch.
+# The role keeps a durable "## Reviewed / watching" list in its home
 # (data/prreview.md), one entry per already-reviewed PR pinned to the
 # source tip it was reviewed against. This script does three side-effect-free things:
 #
@@ -77,7 +77,7 @@ cmd_parse() {
 # is scoped to the "## Reviewed / watching" section, rearm is scoped to CONTENT:
 # a reviewed PR is any list item pinned with a tip=, in ANY Markdown section. So
 # a reviewed PR whose entry was never moved out of "## Queue" (e.g. a session
-# that crashed after posting findings but before the move) is still re-armed
+# that crashed after parking and delivering its report but before the move) is still re-armed
 # here rather than silently dropped - track-until-merge is the durable default,
 # not an opt-in a session can forget. A pending-first-review Queue entry carries
 # no tip=, so it is correctly not yet on the watch. Terminal PRs (merged/

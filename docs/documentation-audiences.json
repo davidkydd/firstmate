@@ -103,6 +103,10 @@
       "target": "docs/verification/runtime-backends.md"
     },
     {
+      "source": "docs/crew-primary-write-guard.md",
+      "target": "docs/verification/runtime-backends.md"
+    },
+    {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
     }
@@ -229,6 +233,34 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/prbabysit/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/persona-menu.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/workflows/post-comments.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/workflows/review.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/workflows/specialist-select.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/prreview/workflows/watch.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/project-management/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -277,6 +309,10 @@
       "audience": "public-product"
     },
     {
+      "path": "fleet/README.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "README.md",
       "audience": "public-product"
     },
@@ -315,6 +351,10 @@
     {
       "path": "docs/codex-app-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/crew-primary-write-guard.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/configuration.md",

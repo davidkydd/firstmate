@@ -693,6 +693,7 @@ tests/fm-claude-stop-autoarm.test.sh 60709
 tests/fm-cmux-claude-composer-live-e2e.test.sh 23
 tests/fm-codex-continuity-live-e2e.test.sh 21
 tests/fm-composer-matrix-live-e2e.test.sh 23
+tests/fm-crew-primary-write-check.test.sh 17000
 tests/fm-control-relaunch.test.sh 48210
 tests/fm-control.test.sh 54301
 tests/fm-cursor-harness.test.sh 30103
@@ -706,6 +707,7 @@ tests/fm-fleet-sync.test.sh 37749
 tests/fm-gate-refuse.test.sh 4977
 tests/fm-gitignore-config.test.sh 62
 tests/fm-gotmp.test.sh 1310
+tests/fm-gemini-harness.test.sh 3517
 tests/fm-grok-continuity-live-e2e.test.sh 20
 tests/fm-grok-stop-live-e2e.test.sh 21
 tests/fm-guard-stale-banner.test.sh 32981
@@ -728,6 +730,7 @@ tests/fm-omp-harness.test.sh 59969
 tests/fm-on.test.sh 34087
 tests/fm-opencode-primary-live-e2e.test.sh 21
 tests/fm-operational-input.test.sh 231
+tests/fm-persistent-roles.test.sh 79000
 tests/fm-peek-remote.test.sh 1018
 tests/fm-pending-reply.test.sh 86711
 tests/fm-pi-branch-extension.test.sh 22239
@@ -737,6 +740,7 @@ tests/fm-pi-primary-live-e2e.test.sh 20
 tests/fm-pi-watch-extension.test.sh 42970
 tests/fm-pi-windows-shell-invocation.test.sh 5121
 tests/fm-pr-check-security.test.sh 172215
+tests/fm-pr-state.test.sh 7449
 tests/fm-procevent-quota.test.sh 1949
 tests/fm-procevent-when.test.sh 17392
 tests/fm-procevent.test.sh 69715
@@ -755,6 +759,7 @@ tests/fm-remote-secondmate-lifecycle-e2e.test.sh 209631
 tests/fm-remote-secondmate-parent-binding.test.sh 29562
 tests/fm-remote-secondmate-trace-context.test.sh 67096
 tests/fm-remote-transport-lanes.test.sh 63976
+tests/fm-review-watch-triage.test.sh 587
 tests/fm-secondmate-harness.test.sh 151589
 tests/fm-secondmate-lifecycle-e2e.test.sh 8793
 tests/fm-secondmate-liveness.test.sh 18146
@@ -1394,6 +1399,12 @@ families_for_changed_path() {
     bin/fm-config-inherit-lib.sh|bin/fm-config-push.sh|bin/fm-shared*|\
     bin/fm-stow-cascade.sh)
       printf '%s\n' secondmate
+      case "$path" in
+        bin/fm-home-seed.sh|bin/fm-remote-home-seed.sh|bin/fm-secondmate-charter-lib.sh|\
+        bin/fm-secondmate-role-sync.sh|bin/fm-secondmates-projection.sh)
+          printf '%s\n' "__script__:fm-persistent-roles.test.sh"
+          ;;
+      esac
       ;;
     bin/fm-session-start.sh|bin/fm-fleet-sync.sh|\
     bin/fm-sessionstart-nudge.sh|bin/fm-startup-network.sh|bin/fm-tangle*|bin/fm-update.sh|\
@@ -1511,6 +1522,10 @@ families_for_changed_path() {
     bin/fm-peek.sh|bin/fm-composer*)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
+      if [ "$path" = bin/fm-spawn.sh ]; then
+        printf '%s\n' "__script__:fm-crew-primary-write-check.test.sh"
+        printf '%s\n' "__script__:fm-persistent-roles.test.sh"
+      fi
       ;;
     bin/fm-task-inbox-lib.sh)
       # The steering-inbox record/doorbell/ladder owner: fm-send's data plane
@@ -1537,8 +1552,10 @@ families_for_changed_path() {
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
     bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-promote.sh|\
-    bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
+    bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/fm-arm-pretool-check.sh|\
+    bin/fm-cd-pretool-check.sh|bin/fm-subagent-pretool-check.sh)
       printf '%s\n' pure-contract-unit
+      [ "$path" != bin/fm-brief.sh ] || printf '%s\n' "__script__:fm-persistent-roles.test.sh"
       ;;
     .agents/skills/quota-array-dispatch/SKILL.md)
       printf '%s\n' pure-contract-unit
@@ -1547,6 +1564,15 @@ families_for_changed_path() {
     .agents/skills/harness-adapters/SKILL.md|.agents/skills/harness-adapters/references/*)
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-fleet-lib.sh|bin/fm-fleet-validate.sh|bin/fm-role-policy.sh|bin/fm-role-periodic-check.sh|\
+    fleet/*|.agents/skills/prreview/*|\
+    .agents/skills/prbabysit/*)
+      printf '%s\n' "__script__:fm-persistent-roles.test.sh"
+      ;;
+    bin/fm-crew-primary-write-check.sh|bin/fm-crew-primary-write-policy.mjs|\
+    docs/crew-primary-write-guard.md)
+      printf '%s\n' "__script__:fm-crew-primary-write-check.test.sh"
       ;;
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit

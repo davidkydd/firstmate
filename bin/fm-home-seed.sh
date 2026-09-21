@@ -731,8 +731,8 @@ initialize_no_mistakes_project() {
 write_registry() {
   local id=$1 home=$2 projects_csv=$3 brief=$4 scope summary tmp today
   mkdir -p "$DATA"
-  scope=$(registry_scope_for_brief "$brief")
-  summary=$(registry_summary_for_brief "$brief")
+  scope=$(registry_scope_for_brief "$brief" "$id")
+  summary=$(registry_summary_for_brief "$brief" "$id")
   today=$(date +%F)
   tmp="$REG.tmp.$$"
   if [ -f "$REG" ]; then
@@ -901,10 +901,10 @@ seed_home() {
   SEED_HOME_BACKED_UP=1
 
   if [ ! -f "$SEED_PARENT_BRIEF" ]; then
-    [ -n "${FM_SECONDMATE_CHARTER:-}" ] || {
-      echo "error: no filled secondmate charter brief at $SEED_PARENT_BRIEF; set FM_SECONDMATE_CHARTER or scaffold one and replace {TASK}" >&2
+    if [ -z "${FM_SECONDMATE_CHARTER:-}" ] && ! fm_fleet_entry_path "$id" >/dev/null 2>&1; then
+      echo "error: no filled secondmate charter brief or valid tracked role definition for $id; set FM_SECONDMATE_CHARTER or scaffold one and replace {TASK}" >&2
       return 1
-    }
+    fi
     [ -d "$DATA/$id" ] || SEED_PARENT_BRIEF_DIR_CREATED=1
     if [ "$no_projects" -eq 1 ]; then
       "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects
@@ -917,12 +917,12 @@ seed_home() {
     echo "error: secondmate charter brief at $SEED_PARENT_BRIEF still contains {TASK}; fill it before seeding" >&2
     return 1
   fi
-  charter_summary=$(registry_summary_for_brief "$SEED_PARENT_BRIEF")
+  charter_summary=$(registry_summary_for_brief "$SEED_PARENT_BRIEF" "$id")
   [ -n "$charter_summary" ] || {
     echo "error: secondmate charter brief at $SEED_PARENT_BRIEF has an empty Charter section; fill it before seeding" >&2
     return 1
   }
-  charter_scope=$(registry_scope_for_brief "$SEED_PARENT_BRIEF")
+  charter_scope=$(registry_scope_for_brief "$SEED_PARENT_BRIEF" "$id")
   [ -n "$charter_scope" ] || {
     echo "error: secondmate charter brief at $SEED_PARENT_BRIEF has an empty Routing scope section; fill it before seeding" >&2
     return 1

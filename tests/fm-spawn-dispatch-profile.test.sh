@@ -119,8 +119,22 @@ assert_meta_profile() {
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
 }
 
+assert_write_boundary_binding() { # <home> <id> <source> <worktree>
+  local home=$1 id=$2 source=$3 worktree=$4 record token
+  record="$home/state/$id.write-boundary"
+  assert_present "$record" "$id did not receive a private write-boundary record"
+  assert_grep 'schema=fm-crew-write-boundary.v1' "$record" "$id binding schema is wrong"
+  assert_grep "task=$id" "$record" "$id binding task is wrong"
+  assert_grep "source=$source" "$record" "$id binding source checkout is wrong"
+  assert_grep "worktree=$worktree" "$record" "$id binding worktree is wrong"
+  [ "$(stat -f %Lp "$record" 2>/dev/null || stat -c %a "$record")" = 600 ] \
+    || fail "$id write-boundary record is not private"
+  token=$(sed -n 's/^token=//p' "$record")
+  [[ "$token" =~ ^[0-9a-f]{64}$ ]] || fail "$id binding token is not 32 random bytes"
+}
+
 test_no_profile_keeps_claude_profile_defaults() {
-  local rec id out status expected launch
+  local rec id out status expected launch guard_cmd payload token rc
   id=profile-off-z1
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
@@ -130,6 +144,17 @@ test_no_profile_keeps_claude_profile_defaults() {
   expect_code 0 "$status" "claude spawn without profile flags should succeed"
   assert_contains "$out" "spawned $id harness=claude" "spawn did not report claude"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
+  assert_write_boundary_binding "$HOME_DIR" "$id" "$PROJ_DIR" "$WT_DIR"
+  jq -e '.hooks.PreToolUse | length == 2' "$WT_DIR/.claude/settings.local.json" >/dev/null 2>&1 \
+    || fail "claude worker settings did not install shell and native-write boundary hooks"
+  guard_cmd=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Write|Edit|MultiEdit|NotebookEdit") | .hooks[0].command' \
+    "$WT_DIR/.claude/settings.local.json")
+  token=$(sed -n 's/^token=//p' "$HOME_DIR/state/$id.write-boundary")
+  payload=$(jq -cn --arg p "$PROJ_DIR/blocked-by-generated-hook" '{tool_name:"Write",tool_input:{file_path:$p}}')
+  out=$(printf '%s' "$payload" | FM_TASK_ID="$id" \
+    FM_CREW_WRITE_BOUNDARY_RECORD="$HOME_DIR/state/$id.write-boundary" \
+    FM_CREW_WRITE_BOUNDARY_TOKEN="$token" bash -c "$guard_cmd" 2>&1); rc=$?
+  expect_code 2 "$rc" "the generated Claude native-write hook must block the source checkout"
 
   launch=$(cat "$LAUNCH_LOG")
   expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' $CLAUDE_CONTROL_CHANNEL_FLAG \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
@@ -412,6 +437,9 @@ test_codex_threads_model_and_effort() {
   status=$?
   expect_code 0 "$status" "codex spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
+  assert_write_boundary_binding "$HOME_DIR" "$id" "$PROJ_DIR" "$WT_DIR"
+  assert_present "$WT_DIR/.codex/hooks.json" "codex worker did not receive a project hook"
+  assert_present "$HOME_DIR/state/$id.codex-write-hook-generated" "codex generated-hook ownership was not recorded"
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
     "codex launch did not thread model and reasoning effort config"
@@ -536,6 +564,9 @@ test_cursor_threads_model_workspace_and_omits_effort_axis() {
   assert_not_contains "$launch" "--reasoning-effort" "cursor launch must not invent a separate reasoning-effort flag"
   assert_grep 'harness=cursor' "$HOME_DIR/state/$id.meta" "cursor harness was not recorded in meta"
   assert_grep 'model=cursor-grok-4.5-high' "$HOME_DIR/state/$id.meta" "cursor model was recorded as default"
+  assert_write_boundary_binding "$HOME_DIR" "$id" "$PROJ_DIR" "$WT_DIR"
+  assert_present "$WT_DIR/.cursor/hooks.json" "cursor worker did not receive a project hook"
+  assert_present "$HOME_DIR/state/$id.cursor-write-hook-generated" "cursor generated-hook ownership was not recorded"
   pass "cursor receives its model-qualified reasoning class and exact task workspace"
 }
 
@@ -591,6 +622,9 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   assert_not_contains "$launch" "--effort" "opencode launch must not pass unsupported --effort"
   assert_not_contains "$launch" "--variant" "opencode launch must not pass run-only --variant"
   assert_not_contains "$launch" "--thinking" "opencode launch must not pass pi thinking flag"
+  assert_write_boundary_binding "$HOME_DIR" "$id" "$PROJ_DIR" "$WT_DIR"
+  assert_grep 'fm-crew-primary-write-check.sh' "$WT_DIR/.opencode/plugins/fm-busy-state.js" \
+    "opencode worker plugin did not install the write-boundary hook"
   pass "opencode receives --model and omits the unsupported effort axis"
 }
 
@@ -680,6 +714,9 @@ test_pi_threads_model_and_max_effort() {
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
+  assert_write_boundary_binding "$HOME_DIR" "$id" "$PROJ_DIR" "$WT_DIR"
+  assert_grep 'fm-crew-primary-write-check.sh' "$HOME_DIR/state/$id.pi-ext.ts" \
+    "pi worker extension did not install the shell and native-write boundary hook"
   pass "pi receives --model and --thinking max profile flags"
 }
 
@@ -1354,6 +1391,25 @@ test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata() {
   pass "an unrecognized config/claude-permission-mode token refuses before any endpoint or metadata"
 }
 
+test_tracked_role_refuses_worker_without_complete_write_guard() {
+  local rec id out status
+  id=role-unguarded-z22b
+  rec=$(make_spawn_case role-unguarded muse "$id")
+  read_case_record "$rec"
+  printf 'prreview\n' > "$HOME_DIR/.fm-secondmate-home"
+  mkdir -p "$HOME_DIR/fleet/agents"
+  cp "$ROOT/fleet/agents/prreview.json" "$HOME_DIR/fleet/agents/prreview.json"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness muse 2>&1)
+  status=$?
+  expect_code 1 "$status" "a tracked role must refuse an unguarded worker runtime"
+  assert_contains "$out" 'has no verified blocking source-checkout write guard' \
+    "unguarded role-worker refusal did not explain the safety gap"
+  assert_absent "$HOME_DIR/state/$id.meta" "unguarded role-worker refusal published metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "unguarded role-worker refusal launched an agent"
+  pass "tracked persistent roles refuse worker runtimes without the complete write-boundary guard"
+}
+
 test_non_claude_harness_ignores_claude_permission_mode() {
   local rec id out status launch
   id=permmode-codex-z23
@@ -1408,6 +1464,7 @@ test_claude_permission_mode_bypass_matches_absent_launch
 test_claude_permission_mode_auto_swaps_only_the_permission_flag
 test_claude_permission_mode_auto_reaches_scout_launch
 test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
+test_tracked_role_refuses_worker_without_complete_write_guard
 test_non_claude_harness_ignores_claude_permission_mode
 test_non_claude_harness_ignores_config_dir
 test_claude_task_launch_carries_control_channel_authority

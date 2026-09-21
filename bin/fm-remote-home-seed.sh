@@ -126,7 +126,9 @@ mkdir -p "$DATA"
 BRIEF="$DATA/$ID/brief.md"
 BRIEF_CREATED=0
 if [ ! -f "$BRIEF" ]; then
-  [ -n "${FM_SECONDMATE_CHARTER:-}" ] || die "no filled charter at $BRIEF; set FM_SECONDMATE_CHARTER or scaffold one first"
+  if [ -z "${FM_SECONDMATE_CHARTER:-}" ] && ! fm_fleet_entry_path "$ID" >/dev/null 2>&1; then
+    die "no filled charter or valid tracked role definition for $ID; set FM_SECONDMATE_CHARTER or scaffold one first"
+  fi
   if [ "$NO_PROJECTS" -eq 1 ]; then
     "$SCRIPT_DIR/fm-brief.sh" "$ID" --secondmate --no-projects >/dev/null
   else
@@ -138,8 +140,8 @@ if grep -F '{TASK}' "$BRIEF" >/dev/null 2>&1; then
   [ "$BRIEF_CREATED" -eq 0 ] || rm -f -- "$BRIEF"
   die "secondmate charter still contains {TASK}: $BRIEF"
 fi
-SUMMARY=$(registry_summary_for_brief "$BRIEF")
-SCOPE=$(registry_scope_for_brief "$BRIEF")
+SUMMARY=$(registry_summary_for_brief "$BRIEF" "$ID")
+SCOPE=$(registry_scope_for_brief "$BRIEF" "$ID")
 [ -n "$SUMMARY" ] && [ -n "$SCOPE" ] || die "charter summary and routing scope must be nonempty"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-remote-home-seed.XXXXXX") || die "cannot create seed staging directory"

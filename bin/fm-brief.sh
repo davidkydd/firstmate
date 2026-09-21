@@ -90,6 +90,8 @@ esac
 
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-fleet-lib.sh
+. "$SCRIPT_DIR/fm-fleet-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
@@ -229,11 +231,30 @@ if [ "$NO_PROJECTS" -eq 1 ]; then
 else
   [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires at least one project, or --no-projects for a project-less home" >&2; exit 1; }
 fi
-SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-"{TASK}"}
-SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-${FM_SECONDMATE_CHARTER:-"{TASK}"}}
+ROLE_DEFINITION=$(fm_fleet_entry_path_unchecked "$ID" 2>/dev/null || true)
+if [ -n "$ROLE_DEFINITION" ] && ! fm_fleet_entry_valid "$ROLE_DEFINITION" "$ID"; then
+  printf 'error: %s\n' "${FM_FLEET_ERROR:-invalid persistent-role definition for $ID}" >&2
+  exit 1
+fi
+SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-}
+if [ -z "$SECONDMATE_CHARTER" ]; then
+  SECONDMATE_CHARTER=$(fm_fleet_charter "$ID" 2>/dev/null || true)
+fi
+SECONDMATE_CHARTER=${SECONDMATE_CHARTER:-"{TASK}"}
+SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-}
+if [ -z "$SECONDMATE_SCOPE" ]; then
+  SECONDMATE_SCOPE=$(fm_fleet_routing_scope "$ID" 2>/dev/null || true)
+fi
+SECONDMATE_SCOPE=${SECONDMATE_SCOPE:-$SECONDMATE_CHARTER}
 if [ "$NO_PROJECTS" -eq 1 ]; then
-  PROJECT_CLONES_BODY="None. This is a project-less domain: its subject is the firstmate repo this home lives in, so it needs no separate clones under \`projects/\`; its crews take pooled worktrees of that firstmate repo."
-  PROJECT_CLONES_NOTE="This domain has no separate project clones: its subject is the firstmate repo this home lives in, and its crews take pooled worktrees of that repo."
+  ROLE_PROJECT_POLICY=$(fm_fleet_project_policy "$ID" 2>/dev/null || true)
+  if [ "$ROLE_PROJECT_POLICY" = dynamic ]; then
+    PROJECT_CLONES_BODY="None are provisioned as a fixed role dependency. Resolve any repository named by a routed request explicitly, and use an isolated worktree of that repository for delegated work."
+    PROJECT_CLONES_NOTE="This role has no fixed project clone dependency. A routed task still resolves one explicit project before delegation, and an absent repository is a blocker rather than permission to invent a substitute."
+  else
+    PROJECT_CLONES_BODY="None. This is a project-less domain: its subject is the firstmate repo this home lives in, so it needs no separate clones under \`projects/\`; its crews take pooled worktrees of that firstmate repo."
+    PROJECT_CLONES_NOTE="This domain has no separate project clones: its subject is the firstmate repo this home lives in, and its crews take pooled worktrees of that repo."
+  fi
 else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
