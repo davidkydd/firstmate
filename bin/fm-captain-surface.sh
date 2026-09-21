@@ -292,7 +292,7 @@ validate_outputs() {
 
 last_seq() { # <store>
   [ -s "$1" ] || { printf '0\n'; return; }
-  jq -r -s '.[-1].seq' "$1"
+  tail -n 1 "$1" | jq -r '.seq'
 }
 
 read_marker() { # <path>
