@@ -117,6 +117,7 @@ export function cloudConfig(env = process.env) {
     maxActivityAgeSeconds,
     maxClockSkewSeconds,
     rateLimitPerMinute: integer(env.FM_TEAMS_RATE_LIMIT_PER_MINUTE, 10, 1, 120, "FM_TEAMS_RATE_LIMIT_PER_MINUTE"),
+    authRateLimitPerMinute: integer(env.FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE, 120, 10, 600, "FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE"),
     ...retention,
     port: integer(env.PORT, 8080, 1, 65535, "PORT"),
   };

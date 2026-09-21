@@ -27,6 +27,30 @@ export function deliveryFailureReply(error) {
   return "The request could not be processed. Try again later.";
 }
 
+export class PreAuthRateLimiter {
+  constructor({ limit, concurrency = 16, windowMilliseconds = 60_000 }) {
+    this.limit = limit;
+    this.concurrency = concurrency;
+    this.windowMilliseconds = windowMilliseconds;
+    this.events = [];
+    this.active = 0;
+  }
+
+  acquire(nowMilliseconds = Date.now()) {
+    const cutoff = nowMilliseconds - this.windowMilliseconds;
+    this.events = this.events.filter((timestamp) => timestamp > cutoff);
+    if (this.active >= this.concurrency || this.events.length >= this.limit) return null;
+    this.events.push(nowMilliseconds);
+    this.active += 1;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.active -= 1;
+    };
+  }
+}
+
 export class SlidingWindowRateLimiter {
   constructor({ limit, windowMilliseconds = 60_000, duplicateLimit = Math.max(3, limit) }) {
     this.limit = limit;

@@ -23,6 +23,19 @@ function retentionBucket(timestamp) {
   return new Date(timestamp).toISOString().slice(0, 13);
 }
 
+async function runConcurrent(items, concurrency, operation, shouldContinue = () => true) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (shouldContinue()) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      await operation(items[index]);
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function syncDirectory(directory) {
   const handle = await open(directory, fsConstants.O_RDONLY);
   try {
@@ -456,7 +469,7 @@ export class LocalRequestStore {
     });
   }
 
-  async nextPurgeEntries(directory, scanLimit) {
+  async nextPurgeEntries(directory, scanLimit, deadline = Infinity) {
     let handle = this.purgeDirectories.get(directory);
     if (!handle) {
       try {
@@ -470,7 +483,7 @@ export class LocalRequestStore {
     const names = [];
     let exhausted = false;
     let inspected = 0;
-    for (; inspected < scanLimit; inspected += 1) {
+    for (; inspected < scanLimit && Date.now() < deadline; inspected += 1) {
       const entry = await handle.read();
       if (!entry) {
         await handle.close().catch(() => {});
@@ -492,7 +505,7 @@ export class LocalRequestStore {
     }
   }
 
-  async migrateExpiryIndex(kind, scanLimit) {
+  async migrateExpiryIndex(kind, scanLimit, concurrency, deadline) {
     const directory = kind === "request" ? this.requests : this.results;
     const complete = path.join(this.expiry, `.${kind}s-indexed`);
     try {
@@ -501,12 +514,18 @@ export class LocalRequestStore {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    const { names, exhausted } = await this.nextPurgeEntries(directory, scanLimit);
-    for (let offset = 0; offset < names.length; offset += 32) {
-      await Promise.all(names.slice(offset, offset + 32).map(async (name) => {
+    let exhausted = false;
+    let inspected = 0;
+    while (!exhausted && inspected < scanLimit && Date.now() < deadline) {
+      const batchLimit = Math.min(scanLimit - inspected, concurrency * 4);
+      const entries = await this.nextPurgeEntries(directory, batchLimit, deadline);
+      inspected += entries.inspected;
+      exhausted = entries.exhausted;
+      await runConcurrent(entries.names, concurrency, async (name) => {
         const value = await this.readRecord(path.join(directory, name));
         if (value) await this.indexRecord(kind, name.slice(0, -5), value);
-      }));
+      });
+      if (entries.inspected === 0) break;
     }
     if (exhausted) {
       await atomicJson(complete, {
@@ -529,50 +548,70 @@ export class LocalRequestStore {
     }
   }
 
-  async purgeIndexedKind(kind, cutoffMilliseconds, limit, scanLimit) {
+  async purgeIndexedKind(kind, cutoffMilliseconds, limit, scanLimit, concurrency, deadline) {
     const indexRoot = kind === "request" ? this.expiryRequests : this.expiryResults;
     const recordRoot = kind === "request" ? this.requests : this.results;
     const partitions = await this.expiryPartitions(indexRoot, retentionBucket(cutoffMilliseconds));
+    const beforeDeadline = () => Date.now() < deadline;
     let inspected = 0;
     let removed = 0;
     for (const partition of partitions) {
-      if (inspected >= scanLimit || removed >= limit) break;
+      if (!beforeDeadline() || inspected >= scanLimit || removed >= limit) break;
       const directory = path.join(indexRoot, partition);
-      const entries = await this.nextPurgeEntries(directory, scanLimit - inspected);
+      const entries = await this.nextPurgeEntries(directory, scanLimit - inspected, deadline);
       inspected += entries.inspected;
-      for (const name of entries.names) {
-        if (removed >= limit) break;
+      const candidates = [];
+      await runConcurrent(entries.names, concurrency, async (name) => {
         const id = name.slice(0, -5);
-        const marker = path.join(directory, name);
-        const file = path.join(recordRoot, name);
-        const initial = await this.readRecord(file);
-        const removeMarker = () => unlink(marker).catch((error) => {
-          if (error?.code !== "ENOENT") throw error;
+        const initial = kind === "result" ? await this.readRecord(path.join(recordRoot, name)) : null;
+        candidates.push({
+          id,
+          name,
+          requestId: kind === "request" ? id : initial?.result?.requestId,
         });
-        const reconcile = async () => {
-          const current = await this.readRecord(file);
-          if (!current) {
-            await removeMarker();
-            return 0;
-          }
-          const timestamp = retentionTimestamp(current);
-          if (!timestamp || Date.parse(timestamp) >= cutoffMilliseconds) {
-            const currentMarker = timestamp ? await this.indexRecord(kind, id, current) : null;
-            if (currentMarker !== marker) await removeMarker();
-            return 0;
-          }
-          await unlink(file);
-          await removeMarker();
-          return 1;
-        };
-        if (kind === "request") {
-          removed += await this.withRequestLock(id, reconcile);
-        } else if (initial?.result?.requestId) {
-          removed += await this.withRequestLock(initial.result.requestId, reconcile);
-        } else {
-          removed += await reconcile();
-        }
+      }, beforeDeadline);
+      const groups = new Map();
+      for (const candidate of candidates) {
+        const groupKey = candidate.requestId || `unowned:${candidate.name}`;
+        const group = groups.get(groupKey) || [];
+        group.push(candidate);
+        groups.set(groupKey, group);
       }
+      await runConcurrent([...groups.values()], concurrency, async (group) => {
+        for (const { id, name, requestId } of group) {
+          if (!beforeDeadline() || removed >= limit) break;
+          const marker = path.join(directory, name);
+          const file = path.join(recordRoot, name);
+          const removeMarker = () => unlink(marker).catch((error) => {
+            if (error?.code !== "ENOENT") throw error;
+          });
+          const reconcile = async () => {
+            if (!beforeDeadline()) return;
+            const current = await this.readRecord(file);
+            if (!current) {
+              await removeMarker();
+              return;
+            }
+            const timestamp = retentionTimestamp(current);
+            if (!timestamp || Date.parse(timestamp) >= cutoffMilliseconds) {
+              const currentMarker = timestamp ? await this.indexRecord(kind, id, current) : null;
+              if (currentMarker !== marker) await removeMarker();
+              return;
+            }
+            if (removed >= limit || !beforeDeadline()) return;
+            removed += 1;
+            try {
+              await unlink(file);
+              await removeMarker();
+            } catch (error) {
+              removed -= 1;
+              throw error;
+            }
+          };
+          if (requestId) await this.withRequestLock(requestId, reconcile);
+          else await reconcile();
+        }
+      }, () => beforeDeadline() && removed < limit);
       if (entries.exhausted) await rmdir(directory).catch((error) => {
         if (error?.code !== "ENOENT" && error?.code !== "ENOTEMPTY") throw error;
       });
@@ -580,18 +619,27 @@ export class LocalRequestStore {
     return removed;
   }
 
-  async purgeBefore(cutoff, limit = 1000, scanLimit = 5000) {
+  async purgeBefore(cutoff, limit = 1000, scanLimit = 5000, { concurrency = 8, deadline = Infinity } = {}) {
     const cutoffMilliseconds = cutoff.getTime();
     if (!Number.isFinite(cutoffMilliseconds)) throw new Error("retention cutoff must be a valid date");
+    if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("retention concurrency must be a positive integer");
     await this.ensure();
     await Promise.all([
-      this.migrateExpiryIndex("request", scanLimit),
-      this.migrateExpiryIndex("result", scanLimit),
+      this.migrateExpiryIndex("request", scanLimit, concurrency, deadline),
+      this.migrateExpiryIndex("result", scanLimit, concurrency, deadline),
     ]);
     let removed = 0;
     for (const [index, kind] of ["request", "result"].entries()) {
+      if (Date.now() >= deadline) break;
       const kindLimit = Math.floor(limit / 2) + (index < limit % 2 ? 1 : 0);
-      removed += await this.purgeIndexedKind(kind, cutoffMilliseconds, kindLimit, scanLimit);
+      removed += await this.purgeIndexedKind(
+        kind,
+        cutoffMilliseconds,
+        kindLimit,
+        scanLimit,
+        concurrency,
+        deadline,
+      );
     }
     return removed;
   }

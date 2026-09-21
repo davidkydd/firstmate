@@ -31,7 +31,10 @@ export function classifyAuthority(text) {
 }
 
 export function redactReply(text, maxBytes = 2500) {
-  let value = String(text || "").replace(/\r\n?/g, "\n").trim();
+  let value = String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .trim();
   const sensitive = [
     /-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|CERTIFICATE)-----/i,
     /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i,
@@ -49,7 +52,6 @@ export function redactReply(text, maxBytes = 2500) {
   if (sensitive.some((pattern) => pattern.test(value))) {
     return "A result is available in the trusted local Firstmate session. Teams delivery was withheld because the result may contain sensitive data.";
   }
-  value = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
   if (!value) {
     return "The request finished without a Teams-safe summary. Review it in the trusted local Firstmate session.";
   }

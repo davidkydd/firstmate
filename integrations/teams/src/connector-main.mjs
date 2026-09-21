@@ -69,7 +69,7 @@ async function serve(home) {
     const deadline = Date.now() + 5 * 60_000;
     let removed;
     do {
-      removed = await store.purgeBefore(cutoff, 5000, 10000);
+      removed = await store.purgeBefore(cutoff, 5000, 10000, { concurrency: 8, deadline });
     } while (removed > 0 && Date.now() < deadline);
   };
   const runHandledRetention = async () => {

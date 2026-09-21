@@ -16,6 +16,7 @@ import { ContractError, makeResult, validateRequest, validateResult } from "../s
 import { AzureTableRequestStore, MemoryRequestStore } from "../src/cloud-store.mjs";
 import {
   deliveryFailureReply,
+  PreAuthRateLimiter,
   reconcilePendingEnqueues,
   shouldSendFailureReply,
   SlidingWindowRateLimiter,
@@ -525,6 +526,20 @@ test("duplicate activity retries have a separate bounded allowance", () => {
   assert.equal(limiter.take("tenant:sender", "activity-1", NOW.getTime() + 60_001), true);
 });
 
+test("pre-authentication admission bounds request rate and concurrency globally", () => {
+  const limiter = new PreAuthRateLimiter({ limit: 2, concurrency: 1, windowMilliseconds: 1000 });
+  const releaseFirst = limiter.acquire(1000);
+  assert.equal(typeof releaseFirst, "function");
+  assert.equal(limiter.acquire(1000), null);
+  releaseFirst();
+  releaseFirst();
+  const releaseSecond = limiter.acquire(1001);
+  assert.equal(typeof releaseSecond, "function");
+  releaseSecond();
+  assert.equal(limiter.acquire(1002), null);
+  assert.equal(typeof limiter.acquire(2001), "function");
+});
+
 test("per-sender rate limiting rejects excess activities with one throttle notice", async () => {
   const sender = new ArraySender();
   const ingress = new TeamsIngress({
@@ -792,6 +807,7 @@ test("secret-bearing replies are withheld and bounded replies are truncated", ()
     "https://storage.example/blob?sv=1&sig=secret-signature",
     "sv=2023-11-03&se=2027-01-01T00%3A00%3A00Z&sp=rw&sig=secret-signature",
     "sp=r&sig=secret-signature&sv=2023-11-03",
+    "client_se\u0001cret=hunter2",
   ]) {
     assert.equal(redactReply(secret).includes(secret), false);
     assert.match(redactReply(secret), /delivery was withheld/);
@@ -1168,6 +1184,69 @@ test("local retention reserves deletion capacity for results", async (t) => {
   assert.equal(await store.purgeBefore(NOW, 2, 10), 2);
   await assert.rejects(readFile(store.resultPath("result_00001")), (error) => error.code === "ENOENT");
   assert.equal((await readdir(store.requests)).filter((name) => name.endsWith(".json")).length, 1);
+});
+
+test("local retention bounds concurrency and serializes records by request", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-retention-concurrent-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const store = new LocalRequestStore(home);
+  await store.ensure();
+  const records = [
+    ["result_00001", "request_0001"],
+    ["result_00002", "request_0001"],
+    ["result_00003", "request_0002"],
+  ];
+  for (const [resultId, requestId] of records) {
+    await store.writeRecord("result", resultId, {
+      queuedAt: "2020-01-01T00:00:00.000Z",
+      result: { requestId },
+    });
+  }
+  const withRequestLock = store.withRequestLock.bind(store);
+  const active = new Set();
+  let concurrent = 0;
+  let maximumConcurrency = 0;
+  store.withRequestLock = async (requestId, operation) => {
+    assert.equal(active.has(requestId), false);
+    active.add(requestId);
+    concurrent += 1;
+    maximumConcurrency = Math.max(maximumConcurrency, concurrent);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    try {
+      return await withRequestLock(requestId, operation);
+    } finally {
+      concurrent -= 1;
+      active.delete(requestId);
+    }
+  };
+  assert.equal(await store.purgeBefore(NOW, 6, 10, { concurrency: 2 }), 3);
+  assert.equal(maximumConcurrency, 2);
+});
+
+test("local retention observes its deadline during indexed sweeps", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-retention-deadline-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const store = new LocalRequestStore(home);
+  await store.ensure();
+  for (let index = 1; index <= 10; index += 1) {
+    await store.writeRecord("result", `result_${String(index).padStart(5, "0")}`, {
+      queuedAt: "2020-01-01T00:00:00.000Z",
+      result: { requestId: `request_${String(index).padStart(4, "0")}` },
+    });
+  }
+  await Promise.all([
+    writeFile(path.join(store.expiry, ".requests-indexed"), "{}\n"),
+    writeFile(path.join(store.expiry, ".results-indexed"), "{}\n"),
+  ]);
+  const readRecord = store.readRecord.bind(store);
+  let reads = 0;
+  store.readRecord = async (...args) => {
+    reads += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return readRecord(...args);
+  };
+  assert.equal(await store.purgeBefore(NOW, 20, 20, { concurrency: 2, deadline: Date.now() + 10 }), 0);
+  assert.ok(reads <= 2);
 });
 
 test("concurrent local updates preserve a terminal outcome", async (t) => {

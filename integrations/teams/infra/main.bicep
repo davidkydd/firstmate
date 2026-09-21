@@ -51,6 +51,11 @@ param certificateName string
 @description('Deploy the externally reachable cloud bot and Azure Bot resource only after rollout approval, app registration, certificate issuance, and image publication.')
 param enableCloudService bool = false
 
+@description('Maximum authentication attempts admitted per minute before JWT verification.')
+@minValue(10)
+@maxValue(600)
+param authRateLimitPerMinute int = 120
+
 @description('Retention in days for active and dead-letter queue messages.')
 @minValue(1)
 @maxValue(14)
@@ -343,6 +348,7 @@ resource cloudApp 'Microsoft.App/containerApps@2024-03-01' = if (enableCloudServ
             { name: 'FM_TEAMS_KEY_VAULT_URL', value: keyVault.properties.vaultUri }
             { name: 'FM_TEAMS_CERTIFICATE_NAME', value: certificateName }
             { name: 'FM_TEAMS_MANAGED_IDENTITY_CLIENT_ID', value: botIdentity.properties.clientId }
+            { name: 'FM_TEAMS_AUTH_RATE_LIMIT_PER_MINUTE', value: string(authRateLimitPerMinute) }
             { name: 'FM_TEAMS_RETENTION_DAYS', value: string(correlationRetentionDays) }
             { name: 'FM_TEAMS_MESSAGE_RETENTION_DAYS', value: string(messageRetentionDays) }
             { name: 'OutboundHostValidator__Enabled', value: 'true' }

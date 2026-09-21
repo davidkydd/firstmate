@@ -12,6 +12,7 @@ import { cloudConfig } from "./config.mjs";
 import { AzureTableRequestStore } from "./cloud-store.mjs";
 import {
   deliveryFailureReply,
+  PreAuthRateLimiter,
   reconcilePendingEnqueues,
   shouldSendFailureReply,
   SlidingWindowRateLimiter,
@@ -160,13 +161,29 @@ async function main() {
     }, { autoCompleteMessages: false, maxConcurrentCalls: 8 });
 
     const app = express();
+    const authRateLimiter = new PreAuthRateLimiter({ limit: config.authRateLimitPerMinute });
+    const admitAuthentication = (_request, response, next) => {
+      const release = authRateLimiter.acquire();
+      if (!release) {
+        response.set("Retry-After", "60").status(429).json({ error: "too_many_requests" });
+        return;
+      }
+      response.once("finish", release);
+      response.once("close", release);
+      next();
+    };
     app.disable("x-powered-by");
     app.get("/healthz", (_request, response) => response.status(200).json({ status: "ok" }));
-    app.use((request, response, next) => adapter.authorizeRequest(request, response, next));
-    app.use(express.json({ limit: "64kb", type: "application/json" }));
-    app.post("/api/messages", requireChannelServiceActivity, async (request, response) => {
-      await adapter.process(request, response, (context) => ingress.handle(context));
-    });
+    app.post(
+      "/api/messages",
+      admitAuthentication,
+      (request, response, next) => adapter.authorizeRequest(request, response, next),
+      express.json({ limit: "64kb", type: "application/json" }),
+      requireChannelServiceActivity,
+      async (request, response) => {
+        await adapter.process(request, response, (context) => ingress.handle(context));
+      },
+    );
     server = app.listen(config.port, "0.0.0.0", () => {
       console.log("Firstmate Teams bot listening", {
         port: config.port,
