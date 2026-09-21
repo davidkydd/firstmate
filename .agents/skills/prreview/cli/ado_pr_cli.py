@@ -283,12 +283,22 @@ def check_git_access(org: str, project: str, repo: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _run_curl(extra_args: list[str], token: str) -> subprocess.CompletedProcess:
+    """Run curl with the auth header supplied through a stdin config file.
+
+    The bearer token is passed via curl's ``--config -`` rather than ``-H`` on
+    the command line, keeping it out of the process argument list.
+    """
+    config = f'header = "Authorization: Bearer {token}"\n'
+    return subprocess.run(
+        ["curl", "-s", "--config", "-", *extra_args],
+        input=config, capture_output=True, text=True, timeout=60,
+    )
+
+
 def _curl_get(url: str, token: str) -> dict:
     """GET an ADO REST endpoint, return parsed JSON."""
-    result = subprocess.run(
-        ["curl", "-s", "-H", f"Authorization: Bearer {token}", url],
-        capture_output=True, text=True, timeout=60,
-    )
+    result = _run_curl([url], token)
     if result.returncode != 0:
         die(f"curl failed: {result.stderr}")
     try:
@@ -301,12 +311,9 @@ def _curl_get(url: str, token: str) -> dict:
 def _curl_post(url: str, token: str, data: dict) -> dict:
     """POST JSON to an ADO REST endpoint."""
     body = json.dumps(data)
-    result = subprocess.run(
-        ["curl", "-s", "-X", "POST",
-         "-H", f"Authorization: Bearer {token}",
-         "-H", "Content-Type: application/json",
-         "-d", body, url],
-        capture_output=True, text=True, timeout=60,
+    result = _run_curl(
+        ["-X", "POST", "-H", "Content-Type: application/json", "-d", body, url],
+        token,
     )
     try:
         return json.loads(result.stdout)
@@ -316,13 +323,11 @@ def _curl_post(url: str, token: str, data: dict) -> dict:
 
 def _curl_patch(url: str, token: str, data: dict | None = None) -> dict:
     """PATCH an ADO REST endpoint."""
-    cmd = ["curl", "-s", "-X", "PATCH",
-           "-H", f"Authorization: Bearer {token}",
-           "-H", "Content-Type: application/json",
-           url]
+    args = ["-X", "PATCH", "-H", "Content-Type: application/json"]
     if data:
-        cmd.extend(["-d", json.dumps(data)])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        args.extend(["-d", json.dumps(data)])
+    args.append(url)
+    result = _run_curl(args, token)
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
