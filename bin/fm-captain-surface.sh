@@ -626,9 +626,23 @@ write_receipt() { # <seq> <phase> <started> <diagnostic>
   mv -f -- "$tmp" "$path"
 }
 
+publish_apply_outcome() { # <seq> <authority> <payload>
+  local seq=$1 authority=$2 payload=$3 task verb body
+  task=$(printf '%s' "$payload" | jq -r '.task_id')
+  if [ "$authority" = typed-decision ]; then
+    body="Typed decision for $task was applied through the captain-hold owner."
+  else
+    verb=$(printf '%s' "$payload" | jq -r '.verb')
+    body="Typed $verb control for $task was applied through the lifecycle owner."
+  fi
+  printf '%s\n' "$body" | FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+    "$0" publish --kind outcome --correlation-id "application:$seq" --body-file - --task-ref "$task" >/dev/null \
+    || die "action completed but its captain-surface outcome could not be stored"
+}
+
 command_apply() {
   local seq='' row kind authority payload receipt started task revision current answer mode verb note
-  local decision_file stdout_file stderr_file rc=0 diagnostic phase result_body output_correlation
+  local decision_file stdout_file stderr_file rc=0 diagnostic phase
   local -a owner_args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in --seq) seq=${2:-}; shift 2 ;; *) usage >&2; exit 2 ;; esac
@@ -647,7 +661,13 @@ command_apply() {
     validate_receipt "$receipt" "$seq"
     phase=$(jq -r '.phase' "$receipt")
     case "$phase" in
-      complete|ignored) jq -c . "$receipt"; release; return 0 ;;
+      complete)
+        jq -c . "$receipt"
+        release
+        publish_apply_outcome "$seq" "$authority" "$payload"
+        return 0
+        ;;
+      ignored) jq -c . "$receipt"; release; return 0 ;;
       claimed) die "input $seq has an uncertain claimed application; reconcile it before any retry" ;;
       failed) die "input $seq has a retained failed application; reconcile it before any retry" ;;
     esac
@@ -685,7 +705,6 @@ command_apply() {
       "$SCRIPT_DIR/fm-captain-hold.sh" "${owner_args[@]}" \
       >"$stdout_file" 2>"$stderr_file" || rc=$?
     rm -f -- "$decision_file"
-    result_body="Typed decision for $task was applied through the captain-hold owner."
   else
     task=$(printf '%s' "$payload" | jq -r '.task_id')
     verb=$(printf '%s' "$payload" | jq -r '.verb')
@@ -695,7 +714,6 @@ command_apply() {
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
       "$SCRIPT_DIR/fm-control.sh" "${owner_args[@]}" \
       >"$stdout_file" 2>"$stderr_file" || rc=$?
-    result_body="Typed $verb control for $task was applied through the lifecycle owner."
   fi
   diagnostic=$(cat "$stderr_file" "$stdout_file" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' | cut -c1-1000)
   rm -f -- "$stdout_file" "$stderr_file"
@@ -712,14 +730,11 @@ command_apply() {
   jq -c . "$receipt"
   release
 
-  output_correlation="application:$seq"
-  printf '%s\n' "$result_body" | FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-    "$0" publish --kind outcome --correlation-id "$output_correlation" --body-file - --task-ref "$task" >/dev/null \
-    || die "action completed but its captain-surface outcome could not be stored"
+  publish_apply_outcome "$seq" "$authority" "$payload"
 }
 
 command_mark_input_handled() {
-  local through='' cursor last seq kind receipt phase
+  local through='' cursor last seq receipt phase typed_seqs
   while [ "$#" -gt 0 ]; do
     case "$1" in --through) through=${2:-}; shift 2 ;; *) usage >&2; exit 2 ;; esac
   done
@@ -732,17 +747,14 @@ command_mark_input_handled() {
   [ "$cursor" -le "$last" ] || die "input cursor is ahead of the store"
   [ "$through" -le "$last" ] || die "cannot acknowledge beyond the input store"
   [ "$through" -gt "$cursor" ] || { release; return 0; }
-  seq=$((cursor + 1))
-  while [ "$seq" -le "$through" ]; do
-    kind=$(jq -r --argjson seq "$seq" 'select(.seq == $seq) | .kind' "$INPUTS")
-    if [ "$kind" = decision ] || [ "$kind" = control ]; then
-      receipt=$(receipt_path "$seq")
-      [ -e "$receipt" ] || die "typed input $seq has no application receipt"
-      validate_receipt "$receipt" "$seq"
-      phase=$(jq -r '.phase' "$receipt")
-      case "$phase" in complete|ignored) ;; *) die "typed input $seq is not completed or ignored" ;; esac
-    fi
-    seq=$((seq + 1))
+  typed_seqs=$(jq -r --argjson lo "$cursor" --argjson hi "$through" \
+    'select(.seq > $lo and .seq <= $hi and (.kind == "decision" or .kind == "control")) | .seq' "$INPUTS")
+  for seq in $typed_seqs; do
+    receipt=$(receipt_path "$seq")
+    [ -e "$receipt" ] || die "typed input $seq has no application receipt"
+    validate_receipt "$receipt" "$seq"
+    phase=$(jq -r '.phase' "$receipt")
+    case "$phase" in complete|ignored) ;; *) die "typed input $seq is not completed or ignored" ;; esac
   done
   write_marker "$INPUT_CURSOR" "$through"
   release
