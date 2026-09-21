@@ -1510,6 +1510,38 @@ test("local retention bounds concurrency and serializes records by request", asy
   assert.equal(maximumConcurrency, 2);
 });
 
+test("local retention awaits every worker before reporting failures", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-retention-failure-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const store = new LocalRequestStore(home);
+  await store.ensure();
+  await Promise.all([
+    writeFile(store.requestPath("request_0001"), "{}\n"),
+    writeFile(store.requestPath("request_0002"), "{}\n"),
+  ]);
+  let signalSecondStarted;
+  let releaseSecond;
+  const secondStarted = new Promise((resolve) => { signalSecondStarted = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  store.indexRecord = async (_kind, id) => {
+    if (id === "request_0001") throw new Error("index failed");
+    signalSecondStarted();
+    await secondGate;
+  };
+
+  const migration = store.migrateExpiryIndex("request", 2, 2, Infinity);
+  let finished = false;
+  migration.then(() => { finished = true; }, () => { finished = true; });
+  await secondStarted;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finished, false);
+  releaseSecond();
+  await assert.rejects(
+    migration,
+    (error) => error instanceof AggregateError && error.errors.length === 1,
+  );
+});
+
 test("local retention observes its deadline during indexed sweeps", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-retention-deadline-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -2015,6 +2047,37 @@ test("dead-letter retention settles only expired messages in bounded batches", a
   assert.equal(await purgeDeadLetters(receiver, new Date("2025-01-01T00:00:00.000Z"), 2), 1);
   assert.deepEqual(completed, [expired]);
   assert.deepEqual(abandoned, []);
+});
+
+test("dead-letter retention awaits every settlement before reporting failures", async () => {
+  const failed = { enqueuedTimeUtc: new Date("2020-01-01T00:00:00.000Z") };
+  const delayed = { enqueuedTimeUtc: new Date("2020-01-02T00:00:00.000Z") };
+  let signalDelayedStarted;
+  let releaseDelayed;
+  const delayedStarted = new Promise((resolve) => { signalDelayedStarted = resolve; });
+  const delayedGate = new Promise((resolve) => { releaseDelayed = resolve; });
+  const receiver = {
+    async peekMessages() { return [failed, delayed]; },
+    async receiveMessages() { return [failed, delayed]; },
+    async completeMessage(message) {
+      if (message === failed) throw new Error("settlement failed");
+      signalDelayedStarted();
+      await delayedGate;
+    },
+    async abandonMessage() {},
+  };
+
+  const purge = purgeDeadLetters(receiver, new Date("2025-01-01T00:00:00.000Z"), 2, { concurrency: 2 });
+  let finished = false;
+  purge.then(() => { finished = true; }, () => { finished = true; });
+  await delayedStarted;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finished, false);
+  releaseDelayed();
+  await assert.rejects(
+    purge,
+    (error) => error instanceof AggregateError && error.errors.length === 1,
+  );
 });
 
 test("dead-letter retention only peeks when no message is expired", async () => {

@@ -55,19 +55,25 @@ export async function purgeDeadLetters(receiver, cutoff, limit = 5000, {
     if (messages.length === 0) break;
     let next = 0;
     let batchRemoved = 0;
-    await Promise.all(Array.from({ length: Math.min(concurrency, messages.length) }, async () => {
-      while (next < messages.length) {
-        const message = messages[next];
-        next += 1;
-        const enqueuedAt = new Date(message.enqueuedTimeUtc || 0);
-        if (!Number.isNaN(enqueuedAt.getTime()) && enqueuedAt < cutoff) {
-          await receiver.completeMessage(message);
-          batchRemoved += 1;
-        } else {
-          await receiver.abandonMessage(message);
+    const settlements = await Promise.allSettled(
+      Array.from({ length: Math.min(concurrency, messages.length) }, async () => {
+        while (next < messages.length) {
+          const message = messages[next];
+          next += 1;
+          const enqueuedAt = new Date(message.enqueuedTimeUtc || 0);
+          if (!Number.isNaN(enqueuedAt.getTime()) && enqueuedAt < cutoff) {
+            await receiver.completeMessage(message);
+            batchRemoved += 1;
+          } else {
+            await receiver.abandonMessage(message);
+          }
         }
-      }
-    }));
+      }),
+    );
+    const failures = settlements.filter((result) => result.status === "rejected").map((result) => result.reason);
+    if (failures.length) {
+      throw new AggregateError(failures, "one or more dead-letter messages failed to settle");
+    }
     removed += batchRemoved;
     if (messages.length < expiredCount || batchRemoved === 0) break;
   }

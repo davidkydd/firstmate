@@ -33,7 +33,11 @@ async function runConcurrent(items, concurrency, operation, shouldContinue = () 
       await operation(items[index]);
     }
   });
-  await Promise.all(workers);
+  const settled = await Promise.allSettled(workers);
+  const failures = settled.filter((result) => result.status === "rejected").map((result) => result.reason);
+  if (failures.length) {
+    throw new AggregateError(failures, "one or more local Teams operations failed");
+  }
 }
 
 async function syncDirectory(directory) {
