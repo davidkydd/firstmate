@@ -1,0 +1,7 @@
+{
+  "name": "firstmate-copilot-app-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Replaceable GitHub Copilot app surface for an external Firstmate home"
+}

@@ -31,6 +31,7 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
+    "docs/copilot-app-surface.md",
     "docs/remote-secondmates.md"
   ],
   "requiredOwnerPointers": [
@@ -130,6 +131,10 @@
     },
     {
       "path": ".agents/skills/captain-hold-lifecycle/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/copilot-app-surface/SKILL.md",
       "audience": "agent-runtime"
     },
     {
@@ -314,6 +319,10 @@
     },
     {
       "path": "docs/codex-app-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/copilot-app-surface.md",
       "audience": "operator-current"
     },
     {
