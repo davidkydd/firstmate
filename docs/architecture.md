@@ -109,6 +109,10 @@ The fleet snapshot and Bearings paths use the concurrent remote-ledger collectio
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, while `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
 The script header owns the exact JSON schema.
 
+The optional GitHub Copilot app surface is a replaceable projection and transport over that snapshot, never another orchestration store.
+`bin/fm-captain-surface.sh` owns its append-only input/output journals, provenance, endpoint generations, per-client contiguous acknowledgements, and typed-action receipts, while [`copilot-app-surface.md`](copilot-app-surface.md) owns current setup and supported limits.
+Every typed decision or lifecycle request still enters through the existing captain-hold or control owner, and an unavailable app surface cannot interrupt external supervision.
+
 On a Pi primary, supervision is default-on: the watcher extension can hand eligible task-local rows from an ordinary actionable wake, plus selected fleet-wide heartbeat reviews, to a persistent in-process supervision conversation while main-only rows remain on the captain-facing path.
 The branch handles those rows, stores the outcome durably, and merges it back into main.
 A captain-facing outcome persists as one exact, sequence-keyed visible transcript entry and then opens one sequence-keyed processing turn on main, which only main's sequence-bound acknowledgement closes.

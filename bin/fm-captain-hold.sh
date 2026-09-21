@@ -22,7 +22,7 @@
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
-#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
+#   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release] [--if-identity <identity>]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -49,6 +49,9 @@
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
+# optionally accepts `--if-identity` with the exact value printed by
+# `open --identity`; that comparison happens under the same task control lock
+# as the answer, so a typed surface cannot spend a stale call revision.
 # writes a resolution block while preserving the leading hold-set stamp until
 # the close succeeds (the previous body is preserved and archived through
 # tasks-axi --archive-body). It closes a question with `tasks-axi done` - or,
@@ -1003,18 +1006,24 @@ remove_interrupted_answer_stamp() {  # <task-id>
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
+  local id=${1:-} decision_file='' release=0 expected_identity='' current_identity
+  local show state hold_kind body outcome recorded_mode occurrence
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --decision-file) shift; decision_file=${1:-} ;;
       --release) release=1 ;;
+      --if-identity) shift; expected_identity=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
   validate_slug task-id "$id"
+  if [ -n "$expected_identity" ]; then
+    validate_one_line decision-identity "$expected_identity"
+    case "$expected_identity" in *'#'*) ;; *) fail "--if-identity must be an identity printed by open --identity" ;; esac
+  fi
   load_decision "$decision_file"
   acquire_task_control_lock "$id"
   require_tasks_axi
@@ -1023,6 +1032,13 @@ command_answer() {
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
+  if [ -n "$expected_identity" ]; then
+    [ "$state" != "done" ] && [ "$hold_kind" = captain ] \
+      || fail "captain-held task $id no longer has the offered open-call identity"
+    current_identity="$(body_hold_set_timestamp "$(decode_shown_value "$body")")#$(resolution_record_count "$body")"
+    [ "$current_identity" = "$expected_identity" ] \
+      || fail "captain-held task $id has changed since the offered decision (expected $expected_identity, current $current_identity)"
+  fi
   if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
   # The occurrence the parent line names: the record about to be written is
   # one past those already in the body, and a retry names the newest one.
