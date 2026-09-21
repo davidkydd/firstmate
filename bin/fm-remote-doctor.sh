@@ -761,6 +761,11 @@ devbox_auth_uuid() {
   [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
 }
 
+devbox_wsl_skip_downstream() { # <reason>
+  record devbox-wsl-systemd "skip: $1"
+  record devbox-wsl-sshd "skip: $1"
+}
+
 check_devbox_wsl() {
   local release release_lower pid1 unit='' load_state active enabled
   [ "$TRANSPORT_PROFILE" = devbox-wsl ] || return 0
@@ -768,8 +773,7 @@ check_devbox_wsl() {
   if [ "$PLATFORM" != linux ]; then
     record devbox-wsl-platform "human: the configured Dev Box route landed on $PLATFORM instead of WSL2 Linux" \
       "configure the SSH alias to terminate at WSL2's sshd, never at a Windows OpenSSH shell"
-    record devbox-wsl-systemd "skip: WSL2 Linux was not reached"
-    record devbox-wsl-sshd "skip: WSL2 Linux was not reached"
+    devbox_wsl_skip_downstream "WSL2 Linux was not reached"
   else
     release=$(uname -r 2>/dev/null || true)
     release_lower=$(printf '%s' "$release" | tr '[:upper:]' '[:lower:]')
@@ -780,14 +784,12 @@ check_devbox_wsl() {
       *microsoft*)
         record devbox-wsl-platform "human: the Linux endpoint reports Microsoft kernel '$release' but not WSL2" \
           "install or select a WSL2 distribution and point the SSH alias at that distribution's sshd"
-        record devbox-wsl-systemd "skip: WSL2 was not confirmed"
-        record devbox-wsl-sshd "skip: WSL2 was not confirmed"
+        devbox_wsl_skip_downstream "WSL2 was not confirmed"
         ;;
       *)
         record devbox-wsl-platform "human: the configured Dev Box profile reached Linux kernel '$release', not a confirmed WSL2 endpoint" \
           "remove the profile for a normal Linux host, or point this Dev Box alias at WSL2's sshd"
-        record devbox-wsl-systemd "skip: WSL2 was not confirmed"
-        record devbox-wsl-sshd "skip: WSL2 was not confirmed"
+        devbox_wsl_skip_downstream "WSL2 was not confirmed"
         ;;
     esac
 
