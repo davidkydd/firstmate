@@ -26,6 +26,7 @@ import {
 } from "../src/ingress.mjs";
 import { FirstmateInboxAdapter } from "../src/local-adapters.mjs";
 import { LocalRequestStore } from "../src/local-store.mjs";
+import { startPeriodicTask } from "../src/periodic-task.mjs";
 import { classifyAuthority, redactReply } from "../src/policy.mjs";
 import { parsePublishArgs } from "../src/publish-args.mjs";
 import { TeamsResultWorker } from "../src/result-worker.mjs";
@@ -915,6 +916,11 @@ test("secret-bearing replies are withheld and bounded replies are truncated", ()
     "{\"password\":\"hunter2\"}",
     "{\"access_token\":\"opaque-value\"}",
     "Bearer eyJsecretvalue",
+    "Authorization: Basic dXNlcjpwYXNz",
+    "authorization: ApiKey opaque-value",
+    "Cookie: session=opaque-value",
+    "Set-Cookie: session=opaque-value; HttpOnly",
+    "{\"Authorization\":\"Basic dXNlcjpwYXNz\"}",
     "ghp_abcdefghijklmnopqrstuvwxyz123456",
     "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
     "AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234567890",
@@ -934,6 +940,37 @@ test("secret-bearing replies are withheld and bounded replies are truncated", ()
   const bounded = redactReply("x".repeat(5000), 300);
   assert.ok(Buffer.byteLength(bounded, "utf8") <= 300);
   assert.match(bounded, /Reply truncated/);
+});
+
+test("periodic tasks stop rescheduling and join their active run", async () => {
+  let runs = 0;
+  let releaseRun;
+  let signalStarted;
+  const runStarted = new Promise((resolve) => { signalStarted = resolve; });
+  const runGate = new Promise((resolve) => { releaseRun = resolve; });
+  const task = startPeriodicTask({
+    operation: async () => {
+      runs += 1;
+      signalStarted();
+      await runGate;
+    },
+    intervalMilliseconds: 1,
+    onError: assert.fail,
+  });
+  const startDeadline = setTimeout(() => signalStarted(), 1000);
+  await runStarted;
+  clearTimeout(startDeadline);
+  assert.equal(runs, 1);
+
+  task.stop();
+  let joined = false;
+  const join = task.join().then(() => { joined = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(joined, false);
+  releaseRun();
+  await join;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(runs, 1);
 });
 
 test("result worker redacts before cloud persistence", async () => {

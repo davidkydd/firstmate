@@ -19,6 +19,7 @@ import {
   SlidingWindowRateLimiter,
   TeamsIngress,
 } from "./ingress.mjs";
+import { startPeriodicTask } from "./periodic-task.mjs";
 import { TeamsResultWorker } from "./result-worker.mjs";
 import { ServiceBusJsonSender, processPeekLockMessage, purgeDeadLetters } from "./service-bus.mjs";
 
@@ -40,11 +41,7 @@ async function main() {
   let deadLetterReceiver;
   let resultSubscription;
   let server;
-  let retentionStopped = false;
-  const retentionTasks = [];
-  let enqueueRetryTimer;
-  let enqueueRetryRun;
-  let enqueueRetryStopped = false;
+  const periodicTasks = [];
   try {
     const authConfig = {
       tenantId: config.tenantId,
@@ -108,28 +105,25 @@ async function main() {
       rateLimiter: new SlidingWindowRateLimiter({ limit: config.rateLimitPerMinute }),
       authorizedRateLimiter: new AuthorizedTrafficRateLimiter({ limit: config.authRateLimitPerMinute }),
     });
-    const scheduleEnqueueRetry = (delayMilliseconds) => {
-      enqueueRetryTimer = setTimeout(() => {
-        enqueueRetryRun = reconcilePendingEnqueues({
+    periodicTasks.push(startPeriodicTask({
+      operation: async () => {
+        const { enqueued, failed } = await reconcilePendingEnqueues({
           store,
           requestSender,
           tenantId: config.tenantId,
           limit: 500,
           concurrency: 8,
-        }).then(({ enqueued, failed }) => {
-          if (enqueued > 0 || failed > 0) {
-            console.log("Firstmate Teams request queue reconciliation completed", { enqueued, failed });
-          }
-        }).catch(
-          (error) => console.error("Firstmate Teams request queue reconciliation failed", { message: error?.message }),
-        ).finally(() => {
-          enqueueRetryRun = undefined;
-          if (!enqueueRetryStopped) scheduleEnqueueRetry(10_000);
         });
-      }, delayMilliseconds);
-      enqueueRetryTimer.unref();
-    };
-    scheduleEnqueueRetry(0);
+        if (enqueued > 0 || failed > 0) {
+          console.log("Firstmate Teams request queue reconciliation completed", { enqueued, failed });
+        }
+      },
+      intervalMilliseconds: 10_000,
+      onError: (error) => console.error(
+        "Firstmate Teams request queue reconciliation failed",
+        { message: error?.message },
+      ),
+    }));
     const resultWorker = new TeamsResultWorker({
       store,
       tenantId: config.tenantId,
@@ -192,24 +186,18 @@ async function main() {
         certificateVersion: certificate.version,
       });
     });
-    const scheduleRetention = (name, operation, intervalMilliseconds) => {
-      const task = { timer: undefined, run: undefined };
-      const schedule = (delayMilliseconds) => {
-        task.timer = setTimeout(() => {
-          task.run = operation().catch(
-            (error) => console.error(`Firstmate Teams ${name} retention failed`, { message: error?.message }),
-          ).finally(() => {
-            task.run = undefined;
-            if (!retentionStopped) schedule(intervalMilliseconds);
-          });
-        }, delayMilliseconds);
-        task.timer.unref();
-      };
-      retentionTasks.push(task);
-      schedule(0);
+    const startRetention = (name, operation, intervalMilliseconds) => {
+      periodicTasks.push(startPeriodicTask({
+        operation,
+        intervalMilliseconds,
+        onError: (error) => console.error(
+          `Firstmate Teams ${name} retention failed`,
+          { message: error?.message },
+        ),
+      }));
     };
-    scheduleRetention("record", purgeExpiredRecords, 3_600_000);
-    scheduleRetention("dead-letter", purgeExpiredDeadLetters, 600_000);
+    startRetention("record", purgeExpiredRecords, 3_600_000);
+    startRetention("dead-letter", purgeExpiredDeadLetters, 600_000);
 
     await new Promise((resolve, reject) => {
       process.once("SIGTERM", () => {
@@ -223,12 +211,8 @@ async function main() {
       server.once("error", reject);
     });
   } finally {
-    enqueueRetryStopped = true;
-    retentionStopped = true;
-    clearTimeout(enqueueRetryTimer);
-    for (const task of retentionTasks) clearTimeout(task.timer);
-    await enqueueRetryRun;
-    await Promise.all(retentionTasks.map((task) => task.run));
+    for (const task of periodicTasks) task.stop();
+    await Promise.all(periodicTasks.map((task) => task.join()));
     await resultSubscription?.close().catch(() => {});
     await Promise.allSettled([
       closeServer(server),

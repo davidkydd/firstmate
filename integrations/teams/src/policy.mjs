@@ -30,6 +30,7 @@ export function redactReply(text, maxBytes = 2500) {
     .trim();
   const sensitive = [
     /-----BEGIN [A-Z0-9 ]*(?:PRIVATE KEY|CERTIFICATE)-----/i,
+    /\b(?:Authorization|Cookie|Set-Cookie)\b\s*["']?\s*:\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s,;}]+)/i,
     /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i,
     /(?:["']?(?:password|passwd|secret|token|access[_ -]?token|refresh[_ -]?token|api[_ -]?key|client[_ -]?secret)["']?)\s*[:=]\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s,;}]+)/i,
     /\b(?:AccountKey|SharedAccessKey|SharedAccessSignature)\s*=/i,

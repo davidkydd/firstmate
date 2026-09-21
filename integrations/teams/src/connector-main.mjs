@@ -11,6 +11,7 @@ import { ConnectorCore } from "./connector-core.mjs";
 import { makeResult, MAX_REQUEST_BYTES, MAX_RESULT_BYTES } from "./contracts.mjs";
 import { FirstmateInboxAdapter, CountsStatusReader } from "./local-adapters.mjs";
 import { LocalRequestStore } from "./local-store.mjs";
+import { startPeriodicTask } from "./periodic-task.mjs";
 import { redactReply } from "./policy.mjs";
 import { parsePublishArgs } from "./publish-args.mjs";
 import { closeResources, ServiceBusJsonSender, processPeekLockMessage, purgeDeadLetters } from "./service-bus.mjs";
@@ -117,27 +118,18 @@ async function serve(home) {
       maxDurationMilliseconds: 5 * 60_000,
     },
   );
-  let retentionStopped = false;
-  const retentionTasks = [];
-  const scheduleRetention = (name, operation) => {
-    const task = { timer: undefined, run: undefined };
-    const schedule = (delayMilliseconds) => {
-      task.timer = setTimeout(() => {
-        task.run = operation().catch(
-          (error) => console.error(`Firstmate Teams ${name} retention failed`, { message: error?.message }),
-        ).finally(() => {
-          task.run = undefined;
-          if (!retentionStopped) schedule(600_000);
-        });
-      }, delayMilliseconds);
-      task.timer.unref();
-    };
-    retentionTasks.push(task);
-    schedule(0);
-  };
-  scheduleRetention("correlation", runCorrelationRetention);
-  scheduleRetention("handled-note", runHandledRetention);
-  scheduleRetention("dead-letter", runDeadLetterRetention);
+  const retentionTasks = [
+    ["correlation", runCorrelationRetention],
+    ["handled-note", runHandledRetention],
+    ["dead-letter", runDeadLetterRetention],
+  ].map(([name, operation]) => startPeriodicTask({
+    operation,
+    intervalMilliseconds: 600_000,
+    onError: (error) => console.error(
+      `Firstmate Teams ${name} retention failed`,
+      { message: error?.message },
+    ),
+  }));
   const receiver = serviceBus.createReceiver(config.requestQueue, { receiveMode: "peekLock" });
   const resultSender = new ServiceBusJsonSender(serviceBus.createSender(config.resultQueue), "firstmate.teams.result.v1");
   const core = new ConnectorCore({
@@ -168,9 +160,8 @@ async function serve(home) {
     process.once("SIGINT", () => resolve("SIGINT"));
   });
   console.log("Firstmate Teams connector stopping", { signal });
-  retentionStopped = true;
-  for (const task of retentionTasks) clearTimeout(task.timer);
-  await Promise.all(retentionTasks.map((task) => task.run));
+  for (const task of retentionTasks) task.stop();
+  await Promise.all(retentionTasks.map((task) => task.join()));
   await closeResources([subscription, receiver, deadLetterReceiver, serviceBus]);
 }
 
