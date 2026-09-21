@@ -13,7 +13,7 @@ export class IgnoredActivity extends Error {
   }
 }
 
-const ALLOWED_ENTITIES = new Set(["mention"]);
+const CLIENT_INFO_FIELDS = new Set(["type", "locale", "country", "platform", "timezone"]);
 const SAFE_ENTITIES = new Map([
   ["&amp;", "&"],
   ["&lt;", "<"],
@@ -77,6 +77,33 @@ function unescapeSafeEntities(value) {
   return value.replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, (entity) => SAFE_ENTITIES.get(entity));
 }
 
+function validateEntities(value) {
+  if (!Array.isArray(value)) {
+    throw new ContractError("rich-content", "unsupported message entities are not accepted");
+  }
+  let clientInfoCount = 0;
+  for (const entity of value) {
+    if (entity?.type === "mention") continue;
+    if (!entity || typeof entity !== "object" || Array.isArray(entity) || entity.type !== "clientInfo") {
+      throw new ContractError("rich-content", "unsupported message entities are not accepted");
+    }
+    clientInfoCount += 1;
+    const fields = Object.keys(entity);
+    const validFields = fields.every((field) => CLIENT_INFO_FIELDS.has(field));
+    const validValues = ["locale", "country", "platform", "timezone"].every((field) => (
+      entity[field] === undefined
+      || (typeof entity[field] === "string"
+        && entity[field].length > 0
+        && entity[field].length <= 128
+        && !/[\x00-\x1f\x7f]/.test(entity[field]))
+    ));
+    if (clientInfoCount > 1 || !validFields || !validValues) {
+      throw new ContractError("rich-content", "clientInfo entity is malformed");
+    }
+  }
+  return value;
+}
+
 function stripBotMention(text, entities, botId) {
   const mentions = entities.filter((entity) => entity?.type === "mention");
   const botMentions = mentions.filter((entity) => entity?.mentioned?.id === botId);
@@ -125,10 +152,7 @@ export function parseTeamsActivity(activity, config, now = new Date()) {
   if (activity.attachments?.length || activity.value !== undefined || activity.suggestedActions) {
     throw new ContractError("rich-content", "attachments, cards, and submitted values are not accepted");
   }
-  const entities = activity.entities || [];
-  if (!Array.isArray(entities) || entities.some((entity) => !ALLOWED_ENTITIES.has(entity?.type))) {
-    throw new ContractError("rich-content", "unsupported message entities are not accepted");
-  }
+  const entities = validateEntities(activity.entities ?? []);
   let text = requiredString(activity.text, "activity text", Math.max(MAX_REQUEST_BYTES * 2, 16384));
   if (Buffer.byteLength(text, "utf8") > config.maxActivityBytes) {
     throw new ContractError("too-large", "activity text exceeds the configured size limit");

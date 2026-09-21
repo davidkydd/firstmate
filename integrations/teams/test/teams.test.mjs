@@ -171,6 +171,29 @@ test("channel authentication binds Teams activities to the token service origin"
   ), false);
 });
 
+test("standard client metadata is accepted without weakening entity filtering", async () => {
+  const activity = await fixture("group-request.json");
+  activity.entities.push({
+    type: "clientInfo",
+    locale: "en-US",
+    country: "US",
+    platform: "Windows",
+    timezone: "America/Los_Angeles",
+  });
+  assert.equal(parseTeamsActivity(activity, config, NOW).command.text, "status");
+
+  const contentBearing = await fixture("personal-request.json");
+  contentBearing.entities.push({ type: "clientInfo", locale: "en-US", text: "hidden request" });
+  assert.throws(
+    () => parseTeamsActivity(contentBearing, config, NOW),
+    (error) => error.code === "rich-content",
+  );
+
+  const duplicate = await fixture("personal-request.json");
+  duplicate.entities.push({ type: "clientInfo", platform: "Web" }, { type: "clientInfo", platform: "Web" });
+  assert.throws(() => parseTeamsActivity(duplicate, config, NOW), (error) => error.code === "rich-content");
+});
+
 test("group messages require this bot's structured leading mention", async () => {
   const missing = await fixture("group-request.json");
   missing.entities = [];
