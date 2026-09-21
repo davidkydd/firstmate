@@ -23,6 +23,26 @@ export function classifyAuthority(text) {
   return { decision: "require-local-approval", category: "untrusted Teams intent" };
 }
 
+function utf8Prefix(value, maxBytes) {
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+function boundReply(value, maxBytes) {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const suffix = "\n\n[Reply truncated. Review the trusted local Firstmate session for the rest.]";
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  if (suffixBytes > maxBytes) return utf8Prefix(suffix.trimStart(), maxBytes);
+  return utf8Prefix(value, maxBytes - suffixBytes).trimEnd() + suffix;
+}
+
 export function redactReply(text, maxBytes = 2500) {
   let value = String(text || "")
     .replace(/\r\n?/g, "\n")
@@ -45,14 +65,10 @@ export function redactReply(text, maxBytes = 2500) {
     /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/,
   ];
   if (sensitive.some((pattern) => pattern.test(value))) {
-    return "A result is available in the trusted local Firstmate session. Teams delivery was withheld because the result may contain sensitive data.";
+    return boundReply("A result is available in the trusted local Firstmate session. Teams delivery was withheld because the result may contain sensitive data.", maxBytes);
   }
   if (!value) {
-    return "The request finished without a Teams-safe summary. Review it in the trusted local Firstmate session.";
+    return boundReply("The request finished without a Teams-safe summary. Review it in the trusted local Firstmate session.", maxBytes);
   }
-  const suffix = "\n\n[Reply truncated. Review the trusted local Firstmate session for the rest.]";
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  let end = Math.max(0, maxBytes - Buffer.byteLength(suffix, "utf8"));
-  while (Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes - Buffer.byteLength(suffix, "utf8")) end -= 1;
-  return value.slice(0, end).trimEnd() + suffix;
+  return boundReply(value, maxBytes);
 }

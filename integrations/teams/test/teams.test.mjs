@@ -963,6 +963,10 @@ test("secret-bearing replies are withheld and bounded replies are truncated", ()
   const bounded = redactReply("x".repeat(5000), 300);
   assert.ok(Buffer.byteLength(bounded, "utf8") <= 300);
   assert.match(bounded, /Reply truncated/);
+
+  const boundedSensitive = redactReply("password=hunter2", 128);
+  assert.ok(Buffer.byteLength(boundedSensitive, "utf8") <= 128);
+  assert.match(boundedSensitive, /Reply truncated/);
 });
 
 test("periodic tasks stop rescheduling and join their active run", async () => {
