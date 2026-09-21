@@ -135,7 +135,6 @@ export async function reconcilePendingEnqueues({
         failed += 1;
         await store.markRequestQueueError(
           request.requestId,
-          request.source.tenantId,
           error,
           request.source,
           enqueueClaimToken,
@@ -145,7 +144,6 @@ export async function reconcilePendingEnqueues({
       try {
         await store.markRequestEnqueued(
           request.requestId,
-          request.source.tenantId,
           request.source,
           enqueueClaimToken,
         );
@@ -232,7 +230,6 @@ export class TeamsIngress {
       } catch (error) {
         await this.store.markRequestQueueError(
           request.requestId,
-          request.source.tenantId,
           error,
           request.source,
           claim.enqueueClaimToken,
@@ -242,7 +239,6 @@ export class TeamsIngress {
       try {
         await this.store.markRequestEnqueued(
           request.requestId,
-          request.source.tenantId,
           request.source,
           claim.enqueueClaimToken,
         );
@@ -254,7 +250,7 @@ export class TeamsIngress {
       try {
         for (const delay of [10, 25, 50, 100]) {
           await new Promise((resolve) => setTimeout(resolve, delay));
-          const current = await this.store.requestById(request.requestId, request.source.tenantId, request.source);
+          const current = await this.store.requestById(request.requestId, request.source.tenantId);
           enqueueStatus = current.enqueueStatus
             || (["pending", "queue-error", "enqueueing"].includes(current.status) ? current.status : "enqueued");
           if (enqueueStatus === "enqueued" || enqueueStatus === "queue-error") break;
@@ -310,7 +306,6 @@ export class TeamsIngress {
     try {
       await this.store.markRequestAcknowledged(
         request.requestId,
-        request.source.tenantId,
         receipt?.id || "unrecorded",
         request.source,
         acknowledgement.acknowledgementClaimToken,

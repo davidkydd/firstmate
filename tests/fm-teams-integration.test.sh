@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# Fixture-backed behavior tests for the optional Microsoft Teams integration.
-# The Node suite reads its activity payloads from tests/fixtures/teams/.
-#
-# The Node suite exercises only local protocol and adapter interfaces with fake
-# queues and Teams contexts. It never authenticates, provisions Azure, starts a
-# cloud listener, registers an app, or sends a Teams message.
+# Dependency-free local behavior tests for the optional Microsoft Teams integration.
 set -eu
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-
-command -v node >/dev/null 2>&1 || {
-  printf '%s\n' 'skip: node not found for Teams integration contract tests'
-  exit 0
-}
-
-node --test "$ROOT/integrations/teams/test/teams.test.mjs"
 
 TMP_ROOT=$(fm_test_tmproot fm-teams-link)
 HOME_DIR="$TMP_ROOT/home"
@@ -77,4 +65,4 @@ fi
 assert_contains "$(cat "$TMP_ROOT/race-err")" "task metadata not found" \
   "link revalidates task metadata after locking"
 
-pass "fm-teams-integration: fixture-backed protocol and end-to-end contracts"
+pass "fm-teams-integration: local task-binding contracts"

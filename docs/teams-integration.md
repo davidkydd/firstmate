@@ -130,7 +130,7 @@ It accepts no storage keys, Service Bus connection strings, registry credentials
 The deployment enables the Agents SDK outbound host validator with the SDK's Microsoft host allowlist.
 [`teams-architecture.md`](teams-architecture.md) owns the inbound token and service-origin checks.
 A pre-authentication concurrency bound limits simultaneous JWT verification and signing-key lookups.
-The global delivery limit is charged only after JWT validation and sender, tenant, and conversation authorization, before the per-sender intake limit, so an unauthorized member cannot consume authorized capacity.
+After JWT validation and sender, tenant, and conversation authorization, the per-sender intake limit is checked first; requests that pass it then consume global authorized-source capacity, so an unauthorized member cannot consume either limit.
 The container is fixed at one replica because the in-process rate windows are abuse bounds rather than the durable deduplication authority.
 Azure Table Storage and Service Bus remain the restart-safe authorities.
 
@@ -242,10 +242,10 @@ Run the integration behavior suite and the repository documentation and lint che
 
 ```sh
 bin/fm-test-run.sh tests/fm-teams-integration.test.sh
+(cd integrations/teams && npm test && npm audit --omit=dev)
 bin/fm-doc-audience-check.sh
 bin/fm-lint.sh
 az bicep build --file integrations/teams/infra/main.bicep
-cd integrations/teams && npm audit --omit=dev
 ```
 
 The fixture suite covers tenant and sender binding, mention parsing, duplicate and reordered delivery, restart replay, queue outage recovery, authorized-source throttling, malformed envelopes, self-reply suppression, exact local approval before general request delivery, privileged-request refusal, secret withholding, and exact `replyToId` correlation.

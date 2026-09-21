@@ -73,12 +73,12 @@ export class MemoryRequestStore {
     return { claims, failures: [] };
   }
 
-  async markRequestEnqueued(requestId, _tenantId, _source, claimToken) {
+  async markRequestEnqueued(requestId, _source, claimToken) {
     const value = this.records.get(requestId);
     Object.assign(value, requestEnqueued(value, claimToken) || {});
   }
 
-  async markRequestQueueError(requestId, _tenantId, error, _source, claimToken) {
+  async markRequestQueueError(requestId, error, _source, claimToken) {
     const value = this.records.get(requestId);
     Object.assign(value, requestQueueError(value, claimToken, error) || {});
   }
@@ -91,7 +91,7 @@ export class MemoryRequestStore {
     return { claimed: Boolean(fields), acknowledgementClaimToken, status: value.acknowledgementStatus };
   }
 
-  async markRequestAcknowledged(requestId, _tenantId, activityId, _source, claimToken) {
+  async markRequestAcknowledged(requestId, activityId, _source, claimToken) {
     const value = this.records.get(requestId);
     Object.assign(value, requestAcknowledged(value, claimToken, activityId) || {});
   }

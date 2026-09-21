@@ -459,11 +459,11 @@ export class AzureTableRequestStore {
     return { claims, failures };
   }
 
-  async markRequestEnqueued(requestId, _tenantId, source, claimToken) {
+  async markRequestEnqueued(requestId, source, claimToken) {
     await this.transitionEnqueueRequest(requestId, source, (current) => requestEnqueued(current, claimToken));
   }
 
-  async markRequestQueueError(requestId, _tenantId, error, source, claimToken) {
+  async markRequestQueueError(requestId, error, source, claimToken) {
     await this.transitionEnqueueRequest(
       requestId,
       source,
@@ -483,7 +483,7 @@ export class AzureTableRequestStore {
     };
   }
 
-  async markRequestAcknowledged(requestId, _tenantId, activityId, source, claimToken) {
+  async markRequestAcknowledged(requestId, activityId, source, claimToken) {
     await this.transitionRequest(requestId, source, (current) => requestAcknowledged(current, claimToken, activityId));
   }
 

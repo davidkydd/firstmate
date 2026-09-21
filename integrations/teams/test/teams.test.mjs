@@ -1062,8 +1062,8 @@ test("result worker enforces trusted queue timing before posting", async () => {
 test("result worker binds the stored request and exact source activity thread", async () => {
   const request = parseTeamsActivity(await fixture("group-request.json"), config, NOW);
   const store = new MemoryRequestStore();
-  await store.claimRequest(request);
-  await store.markRequestEnqueued(request.requestId);
+  const enqueue = await store.claimRequest(request);
+  await store.markRequestEnqueued(request.requestId, request.source, enqueue.enqueueClaimToken);
   const calls = [];
   const result = makeResult(request, "completed", "Finished safely.", { createdAt: NOW.toISOString() });
   const deniedWorker = new TeamsResultWorker({
@@ -1201,12 +1201,11 @@ test("terminal request state is not regressed by a late acknowledgement", async 
   const request = parseTeamsActivity(await fixture("personal-request.json"), config, NOW);
   const store = new MemoryRequestStore();
   const enqueue = await store.claimRequest(request);
-  await store.markRequestEnqueued(request.requestId, request.source.tenantId, request.source, enqueue.enqueueClaimToken);
+  await store.markRequestEnqueued(request.requestId, request.source, enqueue.enqueueClaimToken);
   await store.markRequestOutcome(makeResult(request, "completed", "done", { createdAt: NOW.toISOString() }));
   const acknowledgement = await store.claimRequestAcknowledgement(request.requestId);
   await store.markRequestAcknowledged(
     request.requestId,
-    request.source.tenantId,
     "late-ack",
     request.source,
     acknowledgement.acknowledgementClaimToken,
@@ -1970,7 +1969,6 @@ test("cloud request transitions use etags and preserve terminal status", async (
   const acknowledgement = await store.claimRequestAcknowledgement("tm_" + "a".repeat(64), request.source);
   await store.markRequestAcknowledged(
     "tm_" + "a".repeat(64),
-    TENANT,
     "late-ack",
     request.source,
     acknowledgement.acknowledgementClaimToken,

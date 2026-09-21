@@ -65,7 +65,7 @@ export class TeamsResultWorker {
   }
 
   async processResult(result, enqueuedAt) {
-    const requestRecord = await this.store.requestById(result.requestId, result.source.tenantId, result.source);
+    const requestRecord = await this.store.requestById(result.requestId, result.source.tenantId);
     const request = validateRequest(requestRecord.request);
     validateResultTiming(result, request, enqueuedAt);
     if (!sameSource(request.source, result.source)) {
