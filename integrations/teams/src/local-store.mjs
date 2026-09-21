@@ -109,6 +109,9 @@ function processIsAlive(pid) {
 
 const execFileAsync = promisify(execFile);
 const MALFORMED_LOCK_STALE_MILLISECONDS = 30_000;
+const LOCK_IDENTITY_REVALIDATE_MILLISECONDS = 1_000;
+const MAX_LOCK_IDENTITY_CACHE_ENTRIES = 256;
+const lockIdentityCache = new Map();
 
 async function processIdentity(pid) {
   try {
@@ -165,15 +168,53 @@ function parseLockOwner(value) {
   return null;
 }
 
-async function ownerIsLive(owner) {
-  if (!processIsAlive(owner.pid)) return false;
-  const identity = await processIdentity(owner.pid);
-  return identity === null || identity === owner.processIdentity;
+async function ownerIsLive(owner, nowMilliseconds = Date.now()) {
+  if (!processIsAlive(owner.pid)) {
+    lockIdentityCache.delete(owner.token);
+    return false;
+  }
+  const cached = lockIdentityCache.get(owner.token);
+  if (cached?.pid === owner.pid && cached.processIdentity === owner.processIdentity) {
+    if (cached.check) return cached.check;
+    if (nowMilliseconds - cached.checkedAt < LOCK_IDENTITY_REVALIDATE_MILLISECONDS) return cached.live;
+  }
+
+  lockIdentityCache.delete(owner.token);
+  while (lockIdentityCache.size >= MAX_LOCK_IDENTITY_CACHE_ENTRIES) {
+    lockIdentityCache.delete(lockIdentityCache.keys().next().value);
+  }
+  const entry = {
+    pid: owner.pid,
+    processIdentity: owner.processIdentity,
+    checkedAt: nowMilliseconds,
+    live: true,
+  };
+  entry.check = processIdentity(owner.pid).then((identity) => {
+    entry.live = identity === null || identity === owner.processIdentity;
+    delete entry.check;
+    return entry.live;
+  });
+  lockIdentityCache.set(owner.token, entry);
+  return entry.check;
 }
 
 async function createOwnershipFile(file) {
-  if (!(await createJson(file, await lockOwner()))) return null;
-  return open(file, fsConstants.O_RDONLY);
+  const owner = await lockOwner();
+  let handle;
+  try {
+    handle = await open(file, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR, 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") return null;
+    throw error;
+  }
+  try {
+    await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+    return handle;
+  } catch (error) {
+    await unlinkOwned(file, handle).catch(() => {});
+    await handle.close().catch(() => {});
+    throw error;
+  }
 }
 
 async function ownershipState(file, nowMilliseconds = Date.now()) {

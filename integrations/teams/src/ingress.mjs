@@ -193,8 +193,10 @@ export class TeamsIngress {
     if (sourceAuthorized) {
       const rateKey = `${candidateTenant}:${candidateSender}`;
       const itemId = String(context.activity?.id || `missing_${bodySha256(String(context.activity?.text || ""))}`);
-      const globallyAllowed = !this.authorizedRateLimiter || this.authorizedRateLimiter.take(now.getTime());
-      if (!globallyAllowed || !this.rateLimiter.take(rateKey, itemId, now.getTime())) {
+      const senderAllowed = this.rateLimiter.take(rateKey, itemId, now.getTime());
+      const globallyAllowed = senderAllowed
+        && (!this.authorizedRateLimiter || this.authorizedRateLimiter.take(now.getTime()));
+      if (!senderAllowed || !globallyAllowed) {
         if (this.rateLimiter.shouldNotify(rateKey, now.getTime())) {
           await context.sendActivity(replyActivity(context.activity?.id, "Request refused: the Teams intake rate limit was reached. Try again later."));
         }

@@ -574,6 +574,32 @@ test("unauthorized senders cannot consume the authorized traffic quota", async (
   assert.equal(authorizedRateLimiter.events.length, 1);
 });
 
+test("per-sender throttling does not consume authorized traffic capacity", async () => {
+  const otherSender = "cccccccc-3333-4333-8333-333333333333";
+  const sender = new ArraySender();
+  const authorizedRateLimiter = new AuthorizedTrafficRateLimiter({ limit: 2 });
+  const ingress = new TeamsIngress({
+    config: { ...config, allowedSenderObjectIds: new Set([SENDER, otherSender]) },
+    store: new MemoryRequestStore(),
+    requestSender: sender,
+    rateLimiter: new SlidingWindowRateLimiter({ limit: 1 }),
+    authorizedRateLimiter,
+  });
+  const first = await fixture("personal-request.json");
+  assert.equal((await ingress.handle(context(first), NOW)).disposition, "enqueued");
+  const throttled = await fixture("personal-request.json");
+  throttled.id = "activity-personal-throttled";
+  assert.equal((await ingress.handle(context(throttled), NOW)).disposition, "throttled");
+  assert.equal(authorizedRateLimiter.events.length, 1);
+
+  const other = await fixture("personal-request.json");
+  other.id = "activity-personal-other-sender";
+  other.from.aadObjectId = otherSender;
+  assert.equal((await ingress.handle(context(other), NOW)).disposition, "enqueued");
+  assert.equal(authorizedRateLimiter.events.length, 2);
+  assert.equal(sender.sent.length, 2);
+});
+
 test("per-sender rate limiting rejects excess activities with one throttle notice", async () => {
   const sender = new ArraySender();
   const ingress = new TeamsIngress({
@@ -751,9 +777,46 @@ test("local connector gates general requests and preserves idempotence across re
   assert.equal((await restarted.process(request)).disposition, "approved");
   assert.equal(inboxCalls, 1);
   assert.equal(recoveredSender.sent.length, 1);
-  assert.match(recoveredSender.sent[0].text, /was approved/);
+  assert.match(recoveredSender.sent[0].text, /approval flow/);
   assert.equal((await restarted.process(request)).disposition, "duplicate");
   assert.equal(inboxCalls, 1);
+});
+
+test("accepted result retry is stable across local approval", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fm-teams-accepted-retry-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const request = parseTeamsActivity(await fixture("personal-request.json"), config, NOW);
+  const store = new LocalRequestStore(home);
+  const failedSender = new ArraySender([], 1);
+  const core = new ConnectorCore({
+    config,
+    store,
+    inbox: { async requestApproval() { return "review-inbox-id"; } },
+    statusReader: { async counts() { return "counts"; } },
+    resultSender: failedSender,
+    now: () => NOW,
+  });
+  await assert.rejects(core.process(request), /queue unavailable/);
+  const resultId = failedSender.events[0].resultId;
+  const reserved = JSON.parse(await readFile(store.resultPath(resultId), "utf8"));
+  assert.equal(reserved.state, "publishing");
+
+  await store.update(request.requestId, {
+    approvalStatus: "approved",
+    approvedInboxId: "approved-inbox-id",
+  });
+  const recoveredSender = new ArraySender();
+  const restarted = new ConnectorCore({
+    config,
+    store,
+    inbox: { async requestApproval() { throw new Error("approval was already requested"); } },
+    statusReader: { async counts() { return "counts"; } },
+    resultSender: recoveredSender,
+    now: () => new Date(NOW.getTime() + 1_000),
+  });
+  assert.equal((await restarted.process(request)).disposition, "approved");
+  assert.equal(recoveredSender.sent.length, 1);
+  assert.deepEqual(recoveredSender.sent[0], reserved.result);
 });
 
 test("mobile authority ceiling refuses privileged operations without inbox delivery", async () => {

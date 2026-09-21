@@ -85,9 +85,7 @@ export class ConnectorCore {
     if (!record.reviewInboxId || !["pending", "delivering", "approved"].includes(record.approvalStatus)) {
       throw new Error("Teams request is missing its durable local approval gate");
     }
-    const response = record.approvalStatus === "approved"
-      ? "The request was approved in the trusted local Firstmate session."
-      : "The request reached this Mac and is awaiting approval in the trusted local Firstmate session.";
+    const response = "The request reached this Mac and entered the trusted local Firstmate approval flow.";
     await this.sendResult(record, "accepted", response);
     return {
       disposition: record.approvalStatus === "approved" ? "approved" : "pending-approval",
