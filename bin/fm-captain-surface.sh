@@ -949,7 +949,8 @@ command_view() {
   ack=$(read_marker "$(client_ack_path "$client")")
   input_cursor=$(read_marker "$INPUT_CURSOR")
   output_tail=$([ -s "$OUTPUTS" ] && tail -n 100 "$OUTPUTS" | jq -s '.' || printf '[]')
-  pending_count=$([ -s "$INPUTS" ] && jq -s --argjson cursor "$input_cursor" '[.[] | select(.seq > $cursor)] | length' "$INPUTS" || printf '0')
+  pending_count=$(last_seq "$INPUTS")
+  pending_count=$(( pending_count > input_cursor ? pending_count - input_cursor : 0 ))
   client_json=$(cat "$(client_path "$client")")
   jq -cn --arg schema firstmate.captain-surface-view.v1 --argjson client "$client_json" \
     --argjson acknowledged_through "$ack" --argjson pending_input_count "$pending_count" \
