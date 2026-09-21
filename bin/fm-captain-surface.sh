@@ -100,6 +100,8 @@ ROOT="$STATE/captain-surfaces"
 INPUTS="$ROOT/inputs.jsonl"
 OUTPUTS="$ROOT/outputs.jsonl"
 INPUT_CURSOR="$ROOT/.input-cursor"
+INPUTS_VALIDATED="$ROOT/.inputs-validated"
+OUTPUTS_VALIDATED="$ROOT/.outputs-validated"
 CLIENTS="$ROOT/clients"
 RECEIPTS="$ROOT/receipts"
 LOCK="$ROOT/.lock"
@@ -123,6 +125,10 @@ private_mode() { # <path>
 
 link_count() { # <path>
   stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1" 2>/dev/null
+}
+
+file_size() { # <path>
+  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null
 }
 
 assert_private_dir() { # <path>
@@ -156,7 +162,7 @@ ensure_root() {
     fi
     assert_private_dir "$path"
   done
-  for path in "$INPUTS" "$OUTPUTS" "$INPUT_CURSOR"; do
+  for path in "$INPUTS" "$OUTPUTS" "$INPUT_CURSOR" "$INPUTS_VALIDATED" "$OUTPUTS_VALIDATED"; do
     assert_private_file "$path"
   done
 }
@@ -209,10 +215,30 @@ assert_jsonl_terminated() { # <path>
     || die "refusing operation because the store has an unterminated record: $1"
 }
 
+validation_cache_fresh() { # <store> <cache>
+  local store=$1 cache=$2 cached current
+  [ -e "$cache" ] || return 1
+  assert_private_file "$cache"
+  cached=$(cat "$cache" 2>/dev/null) || return 1
+  case "$cached" in ''|*[!0-9]*) return 1 ;; esac
+  current=$(file_size "$store") || return 1
+  [ "$cached" = "$current" ]
+}
+
+validation_cache_store() { # <store> <cache>
+  local store=$1 cache=$2 size tmp
+  size=$(file_size "$store") || return 0
+  tmp=$(mktemp "$ROOT/.vcache.XXXXXX") || return 0
+  chmod 0600 "$tmp"
+  printf '%s\n' "$size" > "$tmp"
+  mv -f -- "$tmp" "$cache"
+}
+
 validate_inputs() {
   [ -e "$INPUTS" ] || return 0
   assert_private_file "$INPUTS"
   assert_jsonl_terminated "$INPUTS"
+  validation_cache_fresh "$INPUTS" "$INPUTS_VALIDATED" && return 0
   jq -e -s '
     (to_entries | all(
       (.value | keys) == ["authority","client","correlation_id","created_at","generation","kind","payload","provenance","schema","seq"]
@@ -264,12 +290,14 @@ validate_inputs() {
     ))
     and ((map(.correlation_id) | length) == (map(.correlation_id) | unique | length))
   ' "$INPUTS" >/dev/null 2>&1 || die "refusing operation because the input store is malformed or non-sequential"
+  validation_cache_store "$INPUTS" "$INPUTS_VALIDATED"
 }
 
 validate_outputs() {
   [ -e "$OUTPUTS" ] || return 0
   assert_private_file "$OUTPUTS"
   assert_jsonl_terminated "$OUTPUTS"
+  validation_cache_fresh "$OUTPUTS" "$OUTPUTS_VALIDATED" && return 0
   jq -e -s '
     (to_entries | all(
       (.value | keys) == ["correlation_id","created_at","kind","payload","schema","seq","task_ref"]
@@ -293,6 +321,7 @@ validate_outputs() {
     ))
     and ((map(.correlation_id) | length) == (map(.correlation_id) | unique | length))
   ' "$OUTPUTS" >/dev/null 2>&1 || die "refusing operation because the output store is malformed or non-sequential"
+  validation_cache_store "$OUTPUTS" "$OUTPUTS_VALIDATED"
 }
 
 last_seq() { # <store>
@@ -647,7 +676,7 @@ publish_apply_outcome() { # <seq> <authority> <payload>
 
 command_apply() {
   local seq='' row kind authority payload receipt started task revision answer mode verb note
-  local decision_file stdout_file stderr_file rc=0 diagnostic phase offer_reason offer_rc
+  local decision_file stdout_file stderr_file rc=0 diagnostic phase offer_reason offer_rc stale_offer=0
   local -a owner_args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in --seq) seq=${2:-}; shift 2 ;; *) usage >&2; exit 2 ;; esac
@@ -728,11 +757,21 @@ command_apply() {
       >"$stdout_file" 2>"$stderr_file" || rc=$?
   fi
   diagnostic=$(cat "$stderr_file" "$stdout_file" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' | cut -c1-1000)
+  if [ "$rc" -ne 0 ] && [ "$authority" = typed-decision ] \
+    && grep -qF -e 'no longer has the offered open-call identity' \
+                -e 'has changed since the offered decision' "$stderr_file"; then
+    stale_offer=1
+  fi
   rm -f -- "$stdout_file" "$stderr_file"
 
   acquire
   if [ "$rc" -eq 0 ]; then
     write_receipt "$seq" complete "$started" "$diagnostic"
+  elif [ "$stale_offer" -eq 1 ]; then
+    write_receipt "$seq" ignored "$started" "typed decision offer became stale before dispatch: ${diagnostic#fm-captain-hold: }"
+    jq -c . "$receipt"
+    release
+    return 0
   else
     write_receipt "$seq" failed "$started" "${diagnostic:-owner command failed with status $rc}"
     jq -c . "$receipt"
