@@ -1,0 +1,29 @@
+1. TEAMS GROUP CHAT
+User: @Firstmate /firstmate investigate issue 42 and draft a fix
+Bot:  Request tm_7721c4e3 was stored for Firstmate.
+Observed: disposition=enqueued; durable queue messages=1
+
+2. OUTBOUND-ONLY MAC CONNECTOR
+Observed: disposition=pending-approval; Teams replyToId=activity-group-evidence-001
+Local review note (request text is intentionally withheld):
+id=external-teams-review-tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd
+at=2026-09-21T14:40:02Z
+source=teams-review
+external_id=tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd
+--
+Teams request tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd is awaiting trusted-local approval. Review the original Teams message and repeat its exact request in this local session to approve it.
+
+3. TRUSTED LOCAL APPROVAL
+Command result: approved tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd external-teams-tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd
+Firstmate inbox note after exact-text approval:
+id=external-teams-tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd
+at=2026-09-21T14:40:08Z
+source=teams
+external_id=tm_7721c4e31a3ee6764c49a0da8d7400718549db9ea7969eabed11686dedcc62fd
+--
+investigate issue 42 and draft a fix
+
+4. CORRELATED TEAMS RESULT
+Bot reply: Issue 42 was investigated; a draft fix is ready for local review.
+Observed: conversation=19:group-conversation@thread.v2; replyToId=activity-group-evidence-001
+End-to-end outcome: PASS (2 correlated Teams replies; request entered Firstmate only after exact local approval).
