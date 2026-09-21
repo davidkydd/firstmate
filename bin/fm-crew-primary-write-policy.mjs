@@ -122,6 +122,18 @@ function collectRedirectionTargets(tokens, out) {
   }
 }
 
+// The `>|` clobber-override redirect lexes as a `>` redir followed by a bare
+// pipe, so splitProgram leaves the redir as this node's last token and the
+// destination as the next node's leading word (never a target word in-node).
+// Recover that destination so a clobber write into the primary is still caught.
+function collectClobberTarget(tokens, nextNode, out) {
+  if (!nextNode || nextNode.length === 0) return;
+  const last = tokens[tokens.length - 1];
+  if (!last || last.type !== "redir" || last.inlineTarget || !WRITE_REDIR.has(last.value)) return;
+  const target = nextNode[0];
+  if (resolvableWord(target)) out.push(target.value);
+}
+
 function collectCdTargets(position, out) {
   if (!position.command) return;
   const name = basename(position.command.value);
@@ -185,6 +197,28 @@ function plainOperands(position) {
     .filter((word) => resolvableWord(word) && word.value !== "--" && !word.value.startsWith("-"));
 }
 
+// GNU cp/mv/install/ln accept `-t DEST` / `--target-directory[=]DEST`, where the
+// destination is the flag value and every trailing operand is a SOURCE. Without
+// this, `.at(-1)` would pick a source under the worktree and miss the write INTO
+// DEST. Returns { value } when the flag is present (value may be null for an
+// unresolvable destination, which then fails open), or null when it is absent.
+function targetDirectoryFlag(position) {
+  const words = position.words;
+  for (let i = position.index + 1; i < words.length; i += 1) {
+    const word = words[i];
+    const value = word.value;
+    if (value === "--") break;
+    if (value === "-t" || value === "--target-directory" || /^-[a-zA-Z]*t$/.test(value)) {
+      const dest = words[i + 1];
+      return { value: resolvableWord(dest) ? dest.value : null };
+    }
+    if (value.startsWith("--target-directory=")) {
+      return { value: resolvableWord(word) ? value.slice("--target-directory=".length) : null };
+    }
+  }
+  return null;
+}
+
 // Cover the common direct filesystem mutations an agent naturally emits.
 // This is intentionally a bounded command-position policy rather than a shell
 // evaluator; scripts and deliberately hidden targets remain outside the
@@ -199,6 +233,11 @@ function collectMutationTargets(position, out) {
     return;
   }
   if (["cp", "mv", "install", "ln"].includes(name)) {
+    const dest = targetDirectoryFlag(position);
+    if (dest) {
+      if (dest.value !== null) out.push(dest.value);
+      return;
+    }
     out.push(operands.at(-1).value);
     return;
   }
@@ -224,8 +263,10 @@ function collectFromProgram(command, out, depth) {
     return;
   }
   const { nodes } = splitProgram(lexed.tokens);
-  for (const tokens of nodes) {
+  for (let n = 0; n < nodes.length; n += 1) {
+    const tokens = nodes[n];
     collectRedirectionTargets(tokens, out.targets);
+    collectClobberTarget(tokens, nodes[n + 1], out.targets);
     const position = commandPosition(tokens);
     collectCdTargets(position, out.targets);
     collectGitDirTargets(position, out.targets);

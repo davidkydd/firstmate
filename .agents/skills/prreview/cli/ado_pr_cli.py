@@ -59,6 +59,7 @@ DATA_DIR = Path.home() / ".aks" / "ado-pr-review" / "data"
 BARE_REPOS_DIR = DATA_DIR / "bare-repos"
 PR_DATA_DIR = DATA_DIR / "pr-data"
 PR_SNAPSHOT_DIR = DATA_DIR / "pr-snapshots"
+PR_DIFF_DIR = DATA_DIR / "pr-diff"
 GIT_TIMEOUT = int(os.environ.get("GIT_TIMEOUT", "300"))
 
 SKIP_AUTHORS = {"Microsoft.VisualStudio.Services.TFS", "AKS Dev Assistant"}
@@ -763,6 +764,8 @@ def cmd_post_comment(args: argparse.Namespace) -> None:
     success = 0
     failed = 0
 
+    token = get_token()
+
     for i, comment in enumerate(comments):
         file_path = comment.get("file", "")
         start_line = comment.get("startLine", 1)
@@ -786,7 +789,7 @@ def cmd_post_comment(args: argparse.Namespace) -> None:
 
         info(f"Posting comment {i + 1}/{len(comments)} [{severity}] on {file_path}:{start_line}-{end_line}...")
 
-        result = api_post_thread(org, project, repo, pr_id, thread_data, get_token())
+        result = api_post_thread(org, project, repo, pr_id, thread_data, token)
         thread_id = result.get("id")
         if thread_id:
             print(f"[OK]   Thread {thread_id} created")
@@ -938,6 +941,8 @@ def cmd_diff(args: argparse.Namespace) -> None:
         args.pr, args.org, args.project, args.repo)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    if outdir == PR_DIFF_DIR:
+        os.chmod(outdir, 0o700)
 
     token = get_token()
 
@@ -1368,7 +1373,8 @@ def main() -> None:
     # diff
     p_diff = sub.add_parser("diff", help="Fetch PR diff and metadata to local files")
     p_diff.add_argument("pr", help="PR URL or numeric ID")
-    p_diff.add_argument("--outdir", default="/tmp/pr-diff", help="Output directory (default: /tmp/pr-diff)")
+    p_diff.add_argument("--outdir", default=str(PR_DIFF_DIR),
+                        help=f"Output directory (default: {PR_DIFF_DIR})")
     add_common_args(p_diff)
     p_diff.set_defaults(func=cmd_diff)
 
