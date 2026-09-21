@@ -119,16 +119,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Portable stat: GNU `stat -f` means --file-system and succeeds on any real
+# path, so a `stat -f || stat -c` chain never falls through on Linux. Branch on
+# the OS instead (same trap noted in fm-supervise-daemon.sh).
 private_mode() { # <path>
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  if [ "$(uname)" = Darwin ]; then
+    /usr/bin/stat -f '%Lp' "$1" 2>/dev/null
+  else
+    stat -c '%a' "$1" 2>/dev/null
+  fi
 }
 
 link_count() { # <path>
-  stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1" 2>/dev/null
+  if [ "$(uname)" = Darwin ]; then
+    /usr/bin/stat -f '%l' "$1" 2>/dev/null
+  else
+    stat -c '%h' "$1" 2>/dev/null
+  fi
 }
 
 file_size() { # <path>
-  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null
+  if [ "$(uname)" = Darwin ]; then
+    /usr/bin/stat -f '%z' "$1" 2>/dev/null
+  else
+    stat -c '%s' "$1" 2>/dev/null
+  fi
 }
 
 assert_private_dir() { # <path>
