@@ -681,9 +681,9 @@ test("local connector rejects expired requests before durable processing", async
   assert.deepEqual(calls, []);
 });
 
-test("local connector delivers allowlisted read-only work and preserves idempotence across restart and result outage", async () => {
+test("local connector delivers general requests and preserves idempotence across restart and result outage", async () => {
   const activity = await fixture("personal-request.json");
-  activity.text = "/firstmate summarize the open work";
+  activity.text = "/firstmate fix issue 42 and add a regression test";
   const request = parseTeamsActivity(activity, config, NOW);
   const records = new Map();
   const results = new Map();
@@ -753,8 +753,9 @@ test("mobile authority ceiling refuses privileged operations without inbox deliv
   assert.equal(classifyAuthority("summarize the open work").allowed, true);
   assert.equal(classifyAuthority("list the backlog").allowed, true);
   assert.equal(classifyAuthority("show pending tasks?").allowed, true);
-  assert.equal(classifyAuthority("fix issue 42 and add a regression test").allowed, false);
-  assert.equal(classifyAuthority("explain how pull request merges work").allowed, false);
+  assert.equal(classifyAuthority("fix issue 42 and add a regression test").allowed, true);
+  assert.equal(classifyAuthority("explain how pull request merges work").allowed, true);
+  assert.equal(classifyAuthority("draft a migration plan for issue 42").allowed, true);
   assert.equal(classifyAuthority("land PR 42").allowed, false);
   assert.equal(classifyAuthority("git push --force origin main").allowed, false);
   assert.equal(classifyAuthority("give Alice Owner on the subscription").allowed, false);
@@ -811,6 +812,7 @@ test("secret-bearing replies are withheld and bounded replies are truncated", ()
     "xoxb-" + "123456789012-123456789012-" + "abcdefghijklmnopqrstuvwxyz",
     "glpat-abcdefghijklmnopqrstuvwxyz123456",
     "npm_abcdefghijklmnopqrstuvwxyz123456",
+    `${"a".repeat(76)}AZDO${"b".repeat(4)}`,
     "https://alice:super-secret@example.test/private",
     "https://storage.example/blob?sv=1&sig=secret-signature",
     "sv=2023-11-03&se=2027-01-01T00%3A00%3A00Z&sp=rw&sig=secret-signature",
@@ -1054,12 +1056,20 @@ test("real inbox owner stores shell metacharacters as inert stdin and deduplicat
   const notes = (await readdir(path.join(home, "state", "inbox"))).filter((name) => name.endsWith(".note"));
   assert.deepEqual(notes, [`${first}.note`]);
   const body = await readFile(path.join(home, "state", "inbox", notes[0]), "utf8");
+  assert.match(body, /^source=teams$/m);
   assert.match(body, /review \$\(touch SHOULD_NOT_EXIST\); `uname`; && echo safe/);
   await assert.rejects(stat(path.join(ROOT, "SHOULD_NOT_EXIST")), (error) => error.code === "ENOENT");
   const wakePath = path.join(home, "state", ".wake-queue");
   const wake = await readFile(wakePath, "utf8");
   assert.equal(wake.trim().split("\n").length, 1);
   assert.match(wake, new RegExp(`inbox:${first}`));
+  const wakeFields = wake.trim().split("\t");
+  assert.equal(wakeFields.length, 5);
+  await writeFile(wakePath, `${wakeFields.slice(0, 4).join("\t")}\n`);
+  assert.equal(await adapter.deliver(request), first);
+  const recoveredWake = await readFile(wakePath, "utf8");
+  assert.equal(recoveredWake.trim().split("\n").length, 2);
+  assert.equal(recoveredWake.trim().split("\n").at(-1).split("\t").length, 5);
   assert.equal((await stat(wakePath)).mode & 0o077, 0);
   assert.equal((await stat(path.join(home, "state", "inbox"))).mode & 0o077, 0);
   const handled = path.join(home, "state", "inbox", "handled");

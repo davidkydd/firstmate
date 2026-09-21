@@ -22,7 +22,7 @@ It validates the envelope and the tenant, sender, and conversation allowlists ag
 Its deterministic external note ID makes replay after a connector crash idempotent.
 
 Counts-only status is rendered locally by `bin/fm_voice_records.py status --scope counts` and never reads task note bodies or completed history.
-An allowlisted work-summary request receives a typed `accepted` result.
+A general request that does not match a known privileged category receives a typed `accepted` result and enters the inbox as an `external-teams-` note whose `source=teams` header preserves its untrusted provenance.
 Later completion, refusal, or failure summaries are emitted with `bin/fm-teams-connector.sh publish-result`, which obtains the reply destination only from the original local request record.
 
 The result queue carries the original immutable source identity.
@@ -54,8 +54,8 @@ The Azure templates do not create a tunnel, listener, NAT rule, SSH service, or 
 2. The connector rechecks the configured tenant, sender, and conversation allowlists.
 3. The connector atomically captures the request under `state/teams/requests/` before any Firstmate handoff.
 4. A status request runs the counts-only reader and creates a typed status result.
-5. Any request outside the explicit read-only work-summary allowlist, including an unknown or privileged intent, creates a typed refusal and never reaches the Firstmate inbox.
-6. An allowlisted work-summary request goes to the deterministic `fm-inbox.sh external-note` interface through stdin.
+5. A request that matches a known privileged category creates a typed refusal and never reaches the Firstmate inbox.
+6. Every other general request goes to the deterministic `fm-inbox.sh external-note` interface through stdin as provenance-tagged untrusted intent.
 7. The connector records the returned inbox ID before it sends a typed accepted result.
 8. Only after the result queue accepts the deterministic result does the connector complete the request message.
 
@@ -80,8 +80,8 @@ The dead-letter queue and original correlation record preserve the evidence need
 ## Authority and data boundaries
 
 The deterministic authority classifier is independent of authentication and applies again on the Mac.
-Status has a dedicated counts-only path, explicitly allowlisted read-only work-summary requests reach the Firstmate inbox, and every unknown or effectful request is refused pending trusted-local confirmation.
-Privileged requests require confirmation in the trusted local Firstmate session and never reach mutation-capable intake from Teams.
+Status has a dedicated counts-only path, known privileged requests are refused, and other general requests reach the Firstmate inbox with Teams provenance as untrusted intent.
+Authentication and delivery never grant action authority; the local intake procedure applies the ordinary lifecycle and requires trusted-local confirmation for privileged effects even when novel wording does not match the transport classifier.
 
 Message text enters `fm-inbox.sh` on stdin.
 It never enters a shell command line, a generated script, a process lifecycle operation, or a terminal input path.

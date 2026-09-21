@@ -1,17 +1,13 @@
 const LOCAL_CONFIRMATION =
   "This request cannot be authorized from Teams. Confirm the exact action in the trusted local Firstmate session.";
 
-const ALLOWED_INTENTS = [
-  /^(?:summarize|summarise|list|show|describe) (?:the )?(?:(?:open|current|pending) )?(?:work|tasks?|backlog)[?.]?$/i,
-];
-
 const RESTRICTED = [
-  ["merge or pull-request approval", /\b(?:merge|approve|complete)\b[\s\S]{0,80}\b(?:pr|pull request|change)\b|\b(?:pr|pull request)\b[\s\S]{0,80}\bmerge\b/i],
+  ["merge or pull-request approval", /\b(?:merge|approve|complete|land)\b[\s\S]{0,80}\b(?:pr|pull request|change)\b|\b(?:pr|pull request)\b[\s\S]{0,80}\bmerge\b/i],
   ["release or production deployment", /\b(?:release|publish|deploy|rollout|ship)\b[\s\S]{0,80}\b(?:production|prod|release|package|app)\b|^(?:release|publish|deploy|rollout)\b/i],
-  ["destructive or irreversible operation", /\b(?:delete|destroy|wipe|purge|drop|erase|decommission|terminate)\b|\brm\s+(?:-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r)\b|\b(?:reset\s+--hard|force[- ]?push|overwrite history)\b/i],
+  ["destructive or irreversible operation", /\b(?:delete|destroy|wipe|purge|drop|erase|decommission|terminate)\b|\brm\s+(?:-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r)\b|\bgit\s+push\b[^\r\n]{0,80}\s--force(?:-with-lease)?\b|\b(?:reset\s+--hard|force[- ]?push|overwrite history)\b/i],
   ["discarding local work", /\b(?:discard|throw away|remove)\b[\s\S]{0,80}\b(?:local|uncommitted|unlanded|changes?|work)\b/i],
   ["credential, MFA, or consent operation", /\b(?:password|credential|client secret|access token|refresh token|private key|certificate private|mfa|multi-factor|admin consent|oauth consent)\b/i],
-  ["role, permission, or tenant operation", /\b(?:role assignment|grant (?:me |us |them )?(?:access|permission)|revoke (?:access|permission)|tenant change|switch tenant|directory role|access package)\b/i],
+  ["role, permission, or tenant operation", /\b(?:role assignment|grant (?:me |us |them )?(?:access|permission)|revoke (?:access|permission)|tenant change|switch tenant|directory role|access package)\b|\b(?:assign|give|make)\b[\s\S]{0,80}\b(?:owner|contributor|administrator|admin|role)\b/i],
   ["network operation", /\b(?:firewall|network security group|\bnsg\b|vpn|ssh|public endpoint|inbound port|dns change|route table|private endpoint)\b/i],
   ["infrastructure creation", /\b(?:terraform apply|az deployment|create|provision)\b[\s\S]{0,100}\b(?:infrastructure|azure resource|resource group|subscription|service bus|queue|bot registration|app registration|key vault|container app)\b/i],
   ["security-sensitive operation", /\b(?:disable|bypass|weaken|change|update|rotate)\b[\s\S]{0,80}\b(?:security|policy|conditional access|encryption|retention|dlp|certificate)\b/i],
@@ -24,10 +20,7 @@ export function classifyAuthority(text) {
       return { allowed: false, category, response: LOCAL_CONFIRMATION };
     }
   }
-  if (ALLOWED_INTENTS.some((pattern) => pattern.test(normalized))) {
-    return { allowed: true, category: "read-only work summary" };
-  }
-  return { allowed: false, category: "unsupported Teams intent", response: LOCAL_CONFIRMATION };
+  return { allowed: true, category: "untrusted Teams intent" };
 }
 
 export function redactReply(text, maxBytes = 2500) {
@@ -43,6 +36,7 @@ export function redactReply(text, maxBytes = 2500) {
     /\b(?:AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AZURE_CLIENT_SECRET|GOOGLE_API_KEY)\s*[:=]\s*\S+/i,
     /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b/i,
     /\b(?:xox[a-z]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,})\b/i,
+    /\b[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}\b/,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\b[a-z][a-z0-9+.-]*:\/\/[^\s\/:@]+:[^\s\/@]+@[^\s]+/i,
     /https?:\/\/\S*[?&](?:sig|signature)=[^&\s]+/i,

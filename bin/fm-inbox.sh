@@ -238,9 +238,11 @@ cmd_note() {
 }
 
 external_wake_queued_locked() {
-  local kind=$1 key=$2
-  awk -F '\t' -v kind="$kind" -v key="$key" \
-    '$3 == kind && $4 == key { found = 1; exit } END { exit !found }' "$FM_WAKE_QUEUE" 2>/dev/null
+  local kind=$1 key=$2 queued_key
+  while IFS= read -r queued_key; do
+    [ "$queued_key" != "$key" ] || return 0
+  done < <(fm_wake_queued_keys_locked "$kind")
+  return 1
 }
 
 external_note_mutate_locked() {

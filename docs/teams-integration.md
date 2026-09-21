@@ -10,10 +10,10 @@ In a personal bot chat, send `/firstmate <request>`.
 In a group chat or channel, mention the bot first and send `@Firstmate /firstmate <request>`.
 The group and channel forms are accepted only when the Teams activity contains a structured mention of the configured bot.
 
-The integration permits counts-only status and an explicit allowlist of read-only work-summary requests that can be handed to the trusted local Firstmate session.
-It never treats authentication as approval for a privileged action.
-It refuses every unknown or effectful request, including merge or release approval, destructive or irreversible operations, security-sensitive changes, credentials or MFA, consent, role or tenant changes, network changes, infrastructure creation, and discarding local work.
-Those requests must be confirmed in the trusted local Firstmate session.
+The integration permits counts-only status and general requests that can be handed to the trusted local Firstmate session as provenance-tagged untrusted intent.
+It never treats authentication or request delivery as approval for a privileged action.
+It refuses requests that match known privileged categories, including merge or release approval, destructive or irreversible operations, security-sensitive changes, credentials or MFA, consent, role or tenant changes, network changes, infrastructure creation, and discarding local work.
+The trusted local intake procedure remains authoritative and requires local confirmation for privileged effects even when novel wording does not match the transport classifier.
 
 Attachments, cards, submitted values, unsupported entities, unsupported markup, oversized bodies, messages from another tenant or sender, and messages outside the configured replay window are rejected before queueing.
 The bot's own sender identity is ignored.
@@ -233,5 +233,5 @@ az bicep build --file integrations/teams/infra/main.bicep
 cd integrations/teams && npm audit --omit=dev
 ```
 
-The fixture suite covers tenant and sender binding, mention parsing, duplicate and reordered delivery, restart replay, queue outage recovery, throttling, malformed envelopes, self-reply suppression, allowlisted read-only request delivery, deny-by-default authority refusal, secret withholding, and exact `replyToId` correlation.
+The fixture suite covers tenant and sender binding, mention parsing, duplicate and reordered delivery, restart replay, queue outage recovery, throttling, malformed envelopes, self-reply suppression, general request delivery, privileged-request refusal, secret withholding, and exact `replyToId` correlation.
 No test provisions Azure resources, registers an app, obtains consent, issues a certificate, publishes a Teams package, or sends a Teams message.
