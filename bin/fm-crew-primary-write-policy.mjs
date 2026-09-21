@@ -134,6 +134,18 @@ function collectCdTargets(position, out) {
   }
 }
 
+// Pre-subcommand git global options that consume the following word as their
+// value. Skipping that value word keeps the scan from mistaking it for the git
+// subcommand and stopping early (which would hide a later `-C <primary>`).
+const GIT_VALUE_GLOBALS = new Set([
+  "-c",
+  "--namespace",
+  "--exec-path",
+  "--config-env",
+  "--super-prefix",
+  "--attr-source",
+]);
+
 // `git -C <dir>`, `git --git-dir <dir>`, and `git --work-tree <dir>` all point
 // git at another tree; a crew pointing them at the primary is the commit vector.
 // Only the pre-subcommand global options are inspected; scanning stops at the
@@ -156,6 +168,10 @@ function collectGitDirTargets(position, out) {
     }
     if (value.startsWith("--work-tree=")) {
       if (resolvableWord(word)) out.push(value.slice("--work-tree=".length));
+      continue;
+    }
+    if (GIT_VALUE_GLOBALS.has(value)) {
+      i += 1;
       continue;
     }
     if (value.startsWith("-")) continue;

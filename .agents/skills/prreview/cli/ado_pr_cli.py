@@ -58,6 +58,7 @@ ADO_TOKEN_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798"
 DATA_DIR = Path.home() / ".aks" / "ado-pr-review" / "data"
 BARE_REPOS_DIR = DATA_DIR / "bare-repos"
 PR_DATA_DIR = DATA_DIR / "pr-data"
+PR_SNAPSHOT_DIR = DATA_DIR / "pr-snapshots"
 GIT_TIMEOUT = int(os.environ.get("GIT_TIMEOUT", "300"))
 
 SKIP_AUTHORS = {"Microsoft.VisualStudio.Services.TFS", "AKS Dev Assistant"}
@@ -824,6 +825,13 @@ def cmd_pr_url(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _snapshot_path(pr_id: str, name: str) -> Path:
+    """Per-user 0700 path for a PR snapshot file."""
+    PR_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(PR_SNAPSHOT_DIR, 0o700)
+    return PR_SNAPSHOT_DIR / f"pr-{pr_id}-{name}.json"
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     """Show PR metadata, policy evaluations, and merge status."""
     org, project, repo, pr_id = parse_pr_input(
@@ -846,7 +854,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps(meta, indent=2))
 
     # Save full metadata for downstream use
-    tmp = Path(f"/tmp/pr-{pr_id}-full.json")
+    tmp = _snapshot_path(pr_id, "full")
     tmp.write_text(json.dumps(pr, indent=2))
 
     # Policy evaluations
@@ -857,7 +865,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     # Optional: dump the full unsimplified response for downstream tooling
     # (babysit's Stage 1.1 build-policy extraction needs the full shape).
     if getattr(args, "full", False):
-        full_file = Path(f"/tmp/pr-{pr_id}-policies-full.json")
+        full_file = _snapshot_path(pr_id, "policies-full")
         full_file.write_text(json.dumps(policies, indent=2))
         info(f"Wrote full policy details: {full_file}")
 
@@ -874,7 +882,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         })
 
     # Save for downstream
-    pol_file = Path(f"/tmp/pr-{pr_id}-policies.json")
+    pol_file = _snapshot_path(pr_id, "policies")
     pol_file.write_text(json.dumps(simplified, indent=2))
 
     # Group by status
@@ -916,7 +924,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("  5. Resolve conflicts, git add, git commit --no-edit, git push")
 
     print(f"\n=== DONE ===")
-    print(f"Files saved to: /tmp/pr-{pr_id}-*.json")
+    print(f"Files saved to: {PR_SNAPSHOT_DIR}/pr-{pr_id}-*.json")
 
 
 # ---------------------------------------------------------------------------
@@ -1048,7 +1056,7 @@ def cmd_diff(args: argparse.Namespace) -> None:
 
 def _load_policies_file(pr_id: str) -> list[dict]:
     """Load the simplified policy list saved by `status`."""
-    pol_file = Path(f"/tmp/pr-{pr_id}-policies.json")
+    pol_file = _snapshot_path(pr_id, "policies")
     if not pol_file.is_file():
         die(f"Policy snapshot not found: {pol_file}. Run `status {pr_id}` first.")
     try:
@@ -1347,7 +1355,7 @@ def main() -> None:
     p_status = sub.add_parser("status", help="Show PR status, policies, and reviewers")
     p_status.add_argument("pr", help="PR URL or numeric ID")
     p_status.add_argument("--full", action="store_true",
-                          help="Also write /tmp/pr-{id}-policies-full.json with the full API shape")
+                          help="Also write a pr-{id}-policies-full.json snapshot with the full API shape")
     add_common_args(p_status)
     p_status.set_defaults(func=cmd_status)
 
