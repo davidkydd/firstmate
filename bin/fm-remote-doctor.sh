@@ -837,6 +837,10 @@ check_devbox_wsl() {
 
 devbox_auth_skip() { # <reason>
   record devbox-auth-matrix "skip: $1"
+  devbox_auth_skip_downstream "$1"
+}
+
+devbox_auth_skip_downstream() { # <reason>
   record devbox-auth-interactive "skip: $1"
   record devbox-auth-workload "skip: $1"
   record devbox-auth-rbac "skip: $1"
@@ -908,10 +912,7 @@ check_devbox_auth() {
     fi
   fi
   if [ "$devbox_auth_skip_after_matrix" -ne 0 ]; then
-    record devbox-auth-interactive "skip: the authentication matrix is not valid"
-    record devbox-auth-workload "skip: the authentication matrix is not valid"
-    record devbox-auth-rbac "skip: the authentication matrix is not valid"
-    record devbox-auth-app-permissions "skip: the authentication matrix is not valid"
+    devbox_auth_skip_downstream "the authentication matrix is not valid"
     return 0
   fi
 
@@ -924,10 +925,7 @@ check_devbox_auth() {
     || [ "$workload_scope" != "/subscriptions/$SUBSCRIPTION" ]; then
     record devbox-auth-matrix "human: $matrix does not bind its tenant, workload principal, Reader scope, and configured subscription safely" \
       "correct the UUIDs and bind workload Reader to /subscriptions/$SUBSCRIPTION"
-    record devbox-auth-interactive "skip: the authentication matrix binding is invalid"
-    record devbox-auth-workload "skip: the authentication matrix binding is invalid"
-    record devbox-auth-rbac "skip: the authentication matrix binding is invalid"
-    record devbox-auth-app-permissions "skip: the authentication matrix binding is invalid"
+    devbox_auth_skip_downstream "the authentication matrix binding is invalid"
     return 0
   fi
   case "$project_scope" in
@@ -935,20 +933,14 @@ check_devbox_auth() {
     *)
       record devbox-auth-matrix "human: the interactive Dev Box User scope is not a project in subscription $SUBSCRIPTION" \
         "set interactive.rbac.scope to the exact Microsoft.DevCenter project resource ID"
-      record devbox-auth-interactive "skip: the authentication matrix binding is invalid"
-      record devbox-auth-workload "skip: the authentication matrix binding is invalid"
-      record devbox-auth-rbac "skip: the authentication matrix binding is invalid"
-      record devbox-auth-app-permissions "skip: the authentication matrix binding is invalid"
+      devbox_auth_skip_downstream "the authentication matrix binding is invalid"
       return 0
       ;;
   esac
   case "$project_scope" in *$'\t'*|*$'\n'*|*$'\r'*|*'//'*|*'/../'*|*'/./'*)
     record devbox-auth-matrix "human: the interactive Dev Box project scope contains unsafe delimiters" \
       "set interactive.rbac.scope to one normalized Azure resource ID"
-    record devbox-auth-interactive "skip: the authentication matrix binding is invalid"
-    record devbox-auth-workload "skip: the authentication matrix binding is invalid"
-    record devbox-auth-rbac "skip: the authentication matrix binding is invalid"
-    record devbox-auth-app-permissions "skip: the authentication matrix binding is invalid"
+    devbox_auth_skip_downstream "the authentication matrix binding is invalid"
     return 0
     ;;
   esac
