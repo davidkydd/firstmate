@@ -1,0 +1,5 @@
+[project]
+name = "ado-pr-cli"
+version = "0.1.0"
+description = "All-in-one Azure DevOps PR CLI for AKS"
+requires-python = ">=3.10"

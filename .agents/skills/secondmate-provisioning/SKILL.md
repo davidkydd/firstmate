@@ -51,7 +51,9 @@ bin/fm-brief.sh <id> --secondmate {<project>...|--no-projects}
 
 The scaffold writes a charter brief instead of a task brief.
 Set `FM_SECONDMATE_CHARTER='<charter>'` to fill the charter text and `FM_SECONDMATE_SCOPE='<scope>'` when the routing scope differs.
-If you scaffold without `FM_SECONDMATE_CHARTER`, replace the `{TASK}` placeholder before seeding.
+When `<id>` has a valid tracked definition under `fleet/agents/`, the scaffold uses that definition's charter and routing scope before falling back to `{TASK}`; explicit environment values still win.
+Run `bin/fm-fleet-validate.sh [<id>]` before relying on a tracked role, and use `bin/fm-secondmate-role-sync.sh <id>` to regenerate an existing local role home's charter and periodic check from the current authoritative Firstmate source.
+If neither an explicit charter nor a tracked role definition exists, replace the `{TASK}` placeholder before seeding.
 Pass `--no-projects` instead of a project list to scaffold a project-less charter for a domain whose subject is the firstmate repo itself, whose home is a firstmate worktree and whose crews take pooled worktrees of the same repo.
 `--no-projects` is mutually exclusive with a project list, and omitting both still fails loudly, so an accidental omission is never mistaken for a deliberate project-less seed.
 Re-seeding a populated home as project-less is refused non-destructively when the home contains project clones or `data/projects.md` entries.
@@ -84,6 +86,7 @@ The slot stays reserved across restarts until the lease is released.
 Release happens only on explicit retirement or seed rollback, never on routine restart or recovery.
 
 `bin/fm-home-seed.sh` copies the charter into the secondmate home as `data/charter.md`.
+A tracked role's next launch validates its definition and idempotently synchronizes its trusted periodic check; roles without a periodic declaration remain unarmed.
 It also writes the gitignored `.fm-secondmate-parent` durable binding before the required `.fm-secondmate-home` identity marker; the parser header in [`bin/fm-secondmate-parent-lib.sh`](../../../bin/fm-secondmate-parent-lib.sh) owns the record contract, and both files must remain in place.
 `bin/fm-spawn.sh --secondmate` launches it through the secondmate harness path, resolving `config/secondmate-harness` -> `config/crew-harness` -> the primary's own harness unless an explicit per-spawn harness override is passed.
 

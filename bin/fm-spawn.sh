@@ -196,11 +196,12 @@
 #   that never reaches an isolated worktree refuses at the end of that wait,
 #   naming the last path seen and why it was rejected.
 #   That placement is proven only at launch. Every ship or scout pane therefore
-#   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
-#   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
-#   behavior suite from the repository primary checkout while that marker is
-#   set (its header owns the refusal). A secondmate runs in its own home and is
-#   not marked.
+#   also receives `export FM_TASK_ID=<task-id>` plus a private authenticated
+#   source-checkout/worktree binding before the launch command, on the same
+#   channel as GOTMPDIR. The generated per-harness pre-tool guard reads that
+#   binding to deny later writes into the source checkout, while
+#   bin/fm-test-run.sh refuses to execute the behavior suite there when the task
+#   marker is set. A secondmate runs in its own home and receives neither marker.
 #   Only after this isolation check, every fresh ship or scout requires a clean
 #   task worktree. When an origin configuration is detected, spawn fetches it,
 #   resolves the current remote default branch, and resets to its tip. When none
@@ -244,7 +245,8 @@
 #   TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH HERDR_PANE_ID
 #   CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID CMUX_SOCKET_PATH
 #   ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID FM_ZELLIJ_SESSION, plus the task
-#   marker FM_TASK_ID that ship and scout panes receive above.
+#   marker and private write-boundary binding variables that ship and scout
+#   panes receive above.
 #   An enabled task trace also retains TRACEPARENT. Explicit Firstmate launch
 #   assignments still apply inside the filtered environment. Raw commands must
 #   be POSIX sh compatible under this opt-in; the absent-file path is unchanged.
@@ -1053,6 +1055,10 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+WRITE_BOUNDARY_RECORD=
+WRITE_BOUNDARY_CREATED=0
+WRITE_HOOK_GENERATED_PATH=
+WRITE_HOOK_GENERATED_MARKER=
 
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
@@ -1207,6 +1213,13 @@ spawn_abort_cleanup() {
     fm_lock_release "$SPAWN_CONTROL_LOCK" || true
   fi
   [ -z "$SPAWN_META_TMP" ] || rm -f "$SPAWN_META_TMP" 2>/dev/null || true
+  if [ "$WRITE_BOUNDARY_CREATED" = 1 ] && [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    rm -f -- "$WRITE_BOUNDARY_RECORD" 2>/dev/null || true
+    WRITE_BOUNDARY_CREATED=0
+  fi
+  if [ -n "$WRITE_HOOK_GENERATED_PATH" ] && [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    rm -f -- "$WRITE_HOOK_GENERATED_PATH" "$WRITE_HOOK_GENERATED_MARKER" 2>/dev/null || true
+  fi
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
     CONFIG_INHERIT_LOCK_HELD=0
     fm_lock_release "$CONFIG_INHERIT_LOCK" || true
@@ -1937,6 +1950,23 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
   exit 1
 fi
 
+# The three tracked PR roles may dispatch only on worker runtimes with a
+# verified blocking pre-tool surface wired to the source-checkout guard below.
+# Other homes retain the broader verified-worker set; this narrow refusal keeps
+# the migrated roles from operating with only a launch-time isolation check.
+if [ "$KIND" != secondmate ] && [ -f "$FM_HOME/.fm-secondmate-home" ]; then
+  ROLE_OWNER_ID=$(cat "$FM_HOME/.fm-secondmate-home" 2>/dev/null || true)
+  if [ -f "$FM_HOME/fleet/agents/$ROLE_OWNER_ID.json" ]; then
+    case "$HARNESS" in
+      claude*|codex*|opencode*|pi|pi-signed|omp) ;;
+      *)
+        echo "error: persistent role $ROLE_OWNER_ID cannot dispatch $HARNESS workers because that adapter has no verified blocking source-checkout write guard" >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
+
 case "$HARNESS" in
 pi | pi-signed)
   PI_BIN=$(resolve_pi_executable "$HARNESS") || {
@@ -2494,6 +2524,21 @@ if [ "$KIND" = secondmate ]; then
     FM_CONFIG_INHERIT_LIVE=1 \
       propagate_secondmate_inheritance "$FM_HOME" "$PROJ_ABS" "$CONFIG" "$DATA" ||
       echo "warning: secondmate $ID inheritance failed for $PROJ_ABS" >&2
+  fi
+  if [ -f "$PROJ_ABS/fleet/agents/$ID.json" ]; then
+    [ -x "$PROJ_ABS/bin/fm-fleet-validate.sh" ] && [ -x "$PROJ_ABS/bin/fm-role-periodic-check.sh" ] || {
+      echo "error: tracked role $ID is missing its validation or periodic-check owner in $PROJ_ABS" >&2
+      exit 1
+    }
+    if [ "${FM_SKIP_SECONDMATE_SYNC:-0}" = 1 ]; then
+      "$PROJ_ABS/bin/fm-fleet-validate.sh" "$ID" >/dev/null || exit 1
+    else
+      "$PROJ_ABS/bin/fm-fleet-validate.sh" home "$ID" "$PROJ_ABS" "$FM_HOME" >/dev/null || exit 1
+    fi
+    FM_HOME="$PROJ_ABS" "$PROJ_ABS/bin/fm-role-periodic-check.sh" sync "$ID" >/dev/null || {
+      echo "error: could not synchronize periodic role state for $ID in $PROJ_ABS" >&2
+      exit 1
+    }
   fi
   if [ -f "$PROJ_ABS/data/charter.md" ]; then
     BRIEF="$PROJ_ABS/data/charter.md"
@@ -3612,6 +3657,26 @@ mkdir -p "$TASK_TMP/gotmp"
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+WRITE_BOUNDARY_RECORD=
+WRITE_BOUNDARY_TOKEN=
+if [ "$KIND" != secondmate ]; then
+  WRITE_BOUNDARY_RECORD="$STATE_REAL/$ID.write-boundary"
+  WRITE_BOUNDARY_TOKEN=$(fm_trace_context_hex 32) || {
+    echo "error: could not mint the private write-boundary token for $ID" >&2
+    exit 1
+  }
+  write_boundary_tmp=$(mktemp "$STATE_REAL/.fm-write-boundary.XXXXXX") || exit 1
+  {
+    printf 'schema=fm-crew-write-boundary.v1\n'
+    printf 'task=%s\n' "$ID"
+    printf 'source=%s\n' "$PROJ_ABS"
+    printf 'worktree=%s\n' "$WT"
+    printf 'token=%s\n' "$WRITE_BOUNDARY_TOKEN"
+  } > "$write_boundary_tmp" || { rm -f -- "$write_boundary_tmp"; exit 1; }
+  chmod 0600 "$write_boundary_tmp" || { rm -f -- "$write_boundary_tmp"; exit 1; }
+  mv -f -- "$write_boundary_tmp" "$WRITE_BOUNDARY_RECORD" || { rm -f -- "$write_boundary_tmp"; exit 1; }
+  WRITE_BOUNDARY_CREATED=1
+fi
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -3699,8 +3764,9 @@ if [ "$KIND" != secondmate ]; then
     j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+    j_write_guard=$(json_escape "$(shell_quote "$FM_ROOT/bin/fm-crew-primary-write-check.sh") --claude")
     cat >"$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$j_write_guard"}]},{"matcher":"Write|Edit|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"$j_write_guard"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
     exclude_path '.claude/settings.local.json'
     ;;
@@ -3758,9 +3824,29 @@ const busyEvent = (state, event) =>
       "--gen", "$BUSY_GEN", "--source", "opencode-plugin", "--event", event,
     ], () => resolve());
   });
+const writeBoundary = (args) =>
+  new Promise((resolve) => {
+    execFile("$FM_ROOT/bin/fm-crew-primary-write-check.sh", args, (error, _stdout, stderr) => {
+      resolve({ code: error && typeof error.code === "number" ? error.code : 0, stderr: stderr || "" });
+    });
+  });
 export const FmBusyState = async () => {
   let activeSession = null;
   return {
+    "tool.execute.before": async (input, output) => {
+      const tool = input && input.tool;
+      const args = output && output.args ? output.args : {};
+      let result = null;
+      if (tool === "bash" && typeof args.command === "string") {
+        result = await writeBoundary(["--command", args.command]);
+      } else if (["write", "edit", "replace"].includes(tool)) {
+        const filePath = args.filePath || args.file_path || args.path;
+        if (typeof filePath === "string") result = await writeBoundary(["--file-path", filePath]);
+      }
+      if (result && result.code === 2) {
+        throw new Error(result.stderr.trim() || "denied by the crew write-boundary guard");
+      }
+    },
     event: async ({ event }) => {
       if (event.type === "session.status") {
         const sessionID = event.properties.sessionID;
@@ -3814,7 +3900,28 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
     ], () => resolve());
   });
+const writeBoundary = (args: string[]) =>
+  new Promise<{ code: number; stderr: string }>((resolve) => {
+    const script = "$FM_ROOT/bin/fm-crew-primary-write-check.sh";
+    const command = process.platform === "win32" ? "bash" : script;
+    const commandArgs = process.platform === "win32" ? [script, ...args] : args;
+    execFile(command, commandArgs, { encoding: "utf8" }, (error: any, _stdout: string, stderr: string) => {
+      resolve({ code: error && typeof error.code === "number" ? error.code : 0, stderr: stderr || "" });
+    });
+  });
 export default function (pi: any) {
+  pi.on("tool_call", async (event: any) => {
+    if (!event || event.type !== "tool_call") return {};
+    const input = event.input || {};
+    let result: { code: number; stderr: string } | null = null;
+    if (event.toolName === "bash" && typeof input.command === "string") {
+      result = await writeBoundary(["--command", input.command]);
+    } else if ((event.toolName === "write" || event.toolName === "edit") && typeof input.path === "string") {
+      result = await writeBoundary(["--file-path", input.path]);
+    }
+    if (!result || result.code !== 2) return {};
+    return { block: true, reason: result.stderr.trim() || "denied by the crew write-boundary guard" };
+  });
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_settled", (_event: any, ctx: any) => {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
@@ -3862,7 +3969,25 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "omp-ext", "--event", event,
     ], () => resolve());
   });
+const writeBoundary = (args: string[]) =>
+  new Promise<{ code: number; stderr: string }>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-crew-primary-write-check.sh", args, { encoding: "utf8" }, (error: any, _stdout: string, stderr: string) => {
+      resolve({ code: error && typeof error.code === "number" ? error.code : 0, stderr: stderr || "" });
+    });
+  });
 export default function (pi: any) {
+  pi.on("tool_call", async (event: any) => {
+    if (!event || event.type !== "tool_call") return {};
+    const input = event.input || {};
+    let result: { code: number; stderr: string } | null = null;
+    if (event.toolName === "bash" && typeof input.command === "string") {
+      result = await writeBoundary(["--command", input.command]);
+    } else if ((event.toolName === "write" || event.toolName === "edit") && typeof input.path === "string") {
+      result = await writeBoundary(["--file-path", input.path]);
+    }
+    if (!result || result.code !== 2) return {};
+    return { block: true, reason: result.stderr.trim() || "denied by the crew write-boundary guard" };
+  });
   pi.on("agent_start", () => busyEvent("busy", "agent-start"));
   pi.on("agent_end", (event: any) => {
     if (event && event.willContinue === true) return;
@@ -3878,9 +4003,25 @@ EOF
     # installed binary: a pane worker's turns are not observable through
     # the app-server protocol, and its lifecycle hooks did not fire for a
     # firstmate-launched worker. Codex therefore classifies unknown with
-    # an explicit reason rather than falling back to idle, and no busy
-    # wiring is installed. The turn-end NOTIFICATION marker still rides
-    # the launch command via -c notify=[...] and __TURNEND__.
+    # an explicit reason rather than falling back to idle. The turn-end
+    # notification still rides the launch command via notify=. The project
+    # PreToolUse surface is nevertheless blocking, so ensure every worker
+    # has a Bash write-boundary hook without modifying a tracked project hook.
+    if [ -f "$WT/.codex/hooks.json" ]; then
+      grep -F 'FM_CREW_WRITE_GUARD_CHECKER' "$WT/.codex/hooks.json" >/dev/null 2>&1 || {
+        echo "error: project Codex hooks exist without the required crew write-boundary guard: $WT/.codex/hooks.json" >&2
+        exit 1
+      }
+    else
+      mkdir -p "$WT/.codex"
+      cat > "$WT/.codex/hooks.json" <<'EOF'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash -lc 'payload=$(cat 2>/dev/null || true); [ -n \"$payload\" ] || exit 0; [ -n \"${FM_CREW_WRITE_GUARD_CHECKER:-}\" ] || exit 0; printf \"%s\" \"$payload\" | \"${FM_CREW_WRITE_GUARD_CHECKER:-}\"'","timeout":10}]}]}}
+EOF
+      exclude_path '.codex/hooks.json'
+      WRITE_HOOK_GENERATED_PATH="$WT/.codex/hooks.json"
+      WRITE_HOOK_GENERATED_MARKER="$STATE_REAL/$ID.codex-write-hook-generated"
+      printf '%s\n' "$WRITE_HOOK_GENERATED_PATH" > "$WRITE_HOOK_GENERATED_MARKER"
+    fi
     ;;
   grok*)
     # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
@@ -3981,6 +4122,21 @@ EOF
         done
       fi
     } >"$STATE/$ID.cursor-session"
+    if [ -f "$WT/.cursor/hooks.json" ]; then
+      grep -F 'FM_CREW_WRITE_GUARD_CHECKER' "$WT/.cursor/hooks.json" >/dev/null 2>&1 || {
+        echo "error: project Cursor hooks exist without the required crew write-boundary guard: $WT/.cursor/hooks.json" >&2
+        exit 1
+      }
+    else
+      mkdir -p "$WT/.cursor"
+      cat > "$WT/.cursor/hooks.json" <<'EOF'
+{"version":1,"hooks":{"preToolUse":[{"matcher":"Shell","type":"command","command":"[ -n \"${FM_CREW_WRITE_GUARD_CHECKER:-}\" ] || exit 0; exec \"${FM_CREW_WRITE_GUARD_CHECKER:-}\" --cursor","timeout":10}]}}
+EOF
+      exclude_path '.cursor/hooks.json'
+      WRITE_HOOK_GENERATED_PATH="$WT/.cursor/hooks.json"
+      WRITE_HOOK_GENERATED_MARKER="$STATE_REAL/$ID.cursor-write-hook-generated"
+      printf '%s\n' "$WRITE_HOOK_GENERATED_PATH" > "$WRITE_HOOK_GENERATED_MARKER"
+    fi
     ;;
   kimi*)
     # Kimi's Stop hook is global, but it is inert unless cwd contains this
@@ -4323,6 +4479,9 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # syntax of its own.
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   spawn_send_text_line "$T" "export FM_TASK_ID=$ID"
+  spawn_send_text_line "$T" "export FM_CREW_WRITE_BOUNDARY_RECORD=$(shell_quote "$WRITE_BOUNDARY_RECORD")"
+  spawn_send_text_line "$T" "export FM_CREW_WRITE_BOUNDARY_TOKEN=$(shell_quote "$WRITE_BOUNDARY_TOKEN")"
+  spawn_send_text_line "$T" "export FM_CREW_WRITE_GUARD_CHECKER=$(shell_quote "$FM_ROOT/bin/fm-crew-primary-write-check.sh")"
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
@@ -4347,7 +4506,8 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     TMPDIR TMP TEMP GOTMPDIR TMUX TMUX_PANE HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH \
     HERDR_PANE_ID CMUX_WORKSPACE_ID CMUX_SURFACE_ID CMUX_TAB_ID CMUX_PANEL_ID \
     CMUX_SOCKET_PATH ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID FM_ZELLIJ_SESSION \
-    FM_TASK_ID \
+    FM_TASK_ID FM_CREW_WRITE_BOUNDARY_RECORD FM_CREW_WRITE_BOUNDARY_TOKEN \
+    FM_CREW_WRITE_GUARD_CHECKER \
     $LAUNCH_ENV_NAMES; do
     # Only validated names enter shell syntax. Values expand once, quoted, in
     # the pane shell and never become source text or spawn-process snapshots.

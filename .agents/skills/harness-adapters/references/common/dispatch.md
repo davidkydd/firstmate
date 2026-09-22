@@ -16,7 +16,8 @@ The inherited dispatch file applies the same best-fit profiles there.
 
 ## Owners
 
-`../../../bin/fm-spawn.sh` owns launch, autonomy, concrete flags, task-kind compatibility, and worker turn-end wiring.
+`../../../bin/fm-spawn.sh` owns launch, autonomy, concrete flags, task-kind compatibility, worker turn-end wiring, and the private source-checkout/worktree binding consumed by `../../../docs/crew-primary-write-guard.md`.
+Tracked persistent roles refuse worker runtimes that lack a complete verified blocking surface for that guard; this narrow restriction does not change the general adapter's other verified task kinds.
 Natural-language rules stay with firstmate, while scripts receive concrete axes.
 
 `../../../bin/fm-busy-lib.sh` owns semantic busy trust.

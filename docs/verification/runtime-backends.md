@@ -2007,3 +2007,19 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 6. `bin/fm-control.sh <id> exit` stopped the agent and `bin/fm-teardown.sh` returned the worktree and closed the item.
 
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the primary evidence; the worker path above is refreshed by repeating the scout dispatch after any omp upgrade.
+
+## Crew source-checkout write boundary (2026-09-21)
+
+The worker guard uses only pre-tool surfaces already established in the harness sections above and in `docs/arm-pretool-check.md` and `docs/cd-guard.md`.
+`docs/crew-primary-write-guard.md` owns the current integration matrix and the explicit unsupported boundary.
+
+The portable verification command was:
+
+```text
+bin/fm-test-run.sh tests/fm-crew-primary-write-check.test.sh tests/fm-spawn-dispatch-profile.test.sh
+```
+
+The policy suite passed 36 shell/path cases through both stdin and direct adapter entry forms, plus alternate write-tool fields, authenticated-binding mismatch, denial rendering, and fail-open transport cases.
+The spawn suite proved private binding publication and generated hook installation for Claude, Codex, Cursor, OpenCode, and Pi; Pi-signed shares Pi's generated extension and omp uses the same generated `tool_call` handler shape.
+No new prompt-submitting live harness probe was run for this change.
+The named PR roles therefore refuse worker runtimes whose current adapter lacks a complete blocking shell-and-native-write surface rather than claiming unverified protection.

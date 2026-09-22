@@ -28,6 +28,12 @@
         "type": "command",
         "command": "\"$CURSOR_PROJECT_DIR\"/bin/fm-cd-pretool-check.sh --cursor",
         "timeout": 10
+      },
+      {
+        "matcher": "Shell",
+        "type": "command",
+        "command": "[ -n \"${FM_CREW_WRITE_GUARD_CHECKER:-}\" ] || exit 0; exec \"${FM_CREW_WRITE_GUARD_CHECKER:-}\" --cursor",
+        "timeout": 10
       }
     ]
   }

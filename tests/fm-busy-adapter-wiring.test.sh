@@ -296,7 +296,9 @@ test_codex_unverified_until_a_semantic_source_exists() {
   expect_code 0 $? "codex spawn should succeed: $out"
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
-  assert_absent "$WT_DIR/.codex/hooks.json" "codex must not install unverified busy hooks"
+  assert_present "$WT_DIR/.codex/hooks.json" "codex worker must receive its write-boundary project hook"
+  assert_grep 'FM_CREW_WRITE_GUARD_CHECKER' "$WT_DIR/.codex/hooks.json" \
+    "codex .codex/hooks.json must be the write-boundary guard, never unverified busy wiring"
   assert_contains "$out" 'spawned '"$id"' harness=codex' "codex spawn did not complete normally"
   out=$(classify codex "$id" "$state")
   [ "$out" = "unknown codex-unverified" ] || fail "codex must classify 'unknown codex-unverified', got '$out'"
