@@ -118,6 +118,163 @@ These steps are never automated and are always reported rather than silently att
 Firstmate never writes an auto-login password, never changes FileVault, and never stores an account password.
 A file at `~/.local/bin/fm-remote-entrypoint.sh` that is not Firstmate's own symlink is reported for the operator to inspect and is never overwritten.
 
+## Azure Dev Box with WSL2
+
+An existing, entitled Windows Azure Dev Box can host a remote secondmate home inside WSL2 through the opt-in `devbox-wsl` transport profile.
+This support reuses the normal remote route, fixed entrypoint, remote job worker, Herdr `fm-remote` session, and routed reply channel.
+It does not provision, start, stop, hibernate, or otherwise control the Dev Box, and it does not support remote validation workers.
+Windows remains a packet-forwarding layer only, while Firstmate and every child process run inside Linux.
+
+### One-time setup on the Dev Box
+
+Perform these steps interactively on the existing Dev Box under its intended Windows user.
+Use an organization-approved WSL2 distribution and do not place a Firstmate home in the Windows filesystem mounted under `/mnt`.
+
+1. Install WSL2 and the Linux distribution, confirm `wsl.exe --list --verbose` reports version `2`, and enable systemd by placing the following in `/etc/wsl.conf` inside the distribution.
+
+   ```ini
+   [boot]
+   systemd=true
+   ```
+
+2. Run `wsl.exe --shutdown` from Windows, reopen the distribution, and confirm `ps -p 1 -o comm=` prints `systemd`.
+3. Install the distribution's OpenSSH server, configure it to listen on one dedicated port such as `2222`, install only the intended public key in the Linux account's `~/.ssh/authorized_keys`, and run `systemctl enable --now ssh` or the distribution's equivalent `sshd.service` command.
+4. Prefer WSL mirrored networking by setting `networkingMode=mirrored` under `[wsl2]` in the Windows user's `%UserProfile%\.wslconfig`, then restart WSL.
+5. If policy prevents mirrored networking, use a Windows `netsh interface portproxy` rule from one dedicated loopback port to the current WSL2 address and refresh that rule after every WSL address change.
+6. Allow only that SSH port through any required Windows or Hyper-V firewall rule.
+7. Install the Dev Tunnels CLI on Windows, sign in interactively, create one named non-anonymous tunnel, register the SSH port with protocol `auto`, and host it.
+
+   ```powershell
+   devtunnel user login
+   devtunnel create fm-devbox-wsl
+   devtunnel port create fm-devbox-wsl -p 2222 --protocol auto
+   devtunnel host fm-devbox-wsl
+   ```
+
+8. Create a Windows Scheduled Task for that user which starts the selected WSL distribution and hosts the named tunnel at sign-in, and configure the tunnel-host action to restart after failure.
+9. Clone Firstmate, its projects, and the required toolchain inside the WSL2 filesystem, then expose `fm-remote-entrypoint.sh` exactly as in [Prerequisites](#prerequisites).
+
+Do not enable anonymous tunnel access, SSH agent forwarding, password authentication, or an SSH `ProxyCommand` assembled from untrusted values.
+Do not place private keys, tunnel tokens, or application databases in the repository or Firstmate configuration.
+The tunnel client owns its own interactive credential cache, while the SSH server owns the pinned public key.
+
+### Stable primary-side endpoint
+
+On the primary machine, sign in to Dev Tunnels interactively and connect to the same named tunnel.
+Reserve the local port so it stays stable and verify the CLI reports that the remote `2222` port is forwarded to local `127.0.0.1:2222` before configuring Firstmate.
+
+```sh
+devtunnel user login
+devtunnel connect fm-devbox-wsl
+```
+
+Create an OpenSSH alias which targets that loopback endpoint and lands directly in the WSL2 account.
+Use `HostKeyAlias` so host-key identity remains stable even though the TCP endpoint is loopback.
+The example intentionally keeps strict checking and agent forwarding disabled.
+
+```sshconfig
+Host fm-devbox-wsl
+    HostName 127.0.0.1
+    Port 2222
+    User <wsl-user>
+    IdentityFile ~/.ssh/<dedicated-key>
+    IdentitiesOnly yes
+    HostKeyAlias fm-devbox-wsl
+    StrictHostKeyChecking yes
+    ForwardAgent no
+```
+
+Obtain the WSL2 sshd host-key fingerprint from the trusted Dev Box console, compare it with the forwarded endpoint, and pin the verified key before the first unattended connection.
+Never make the first connection work by setting `StrictHostKeyChecking=no`, using an empty known-hosts file, or accepting an unverified key.
+
+Add the primary-local profile binding described by [Remote transport profiles](configuration.md#remote-transport-profiles-configremote-transports).
+The SSH alias remains the `host:` value in `data/secondmates.md`, so no route-schema change or migration is required.
+
+```text
+schema=fm-remote-transports.v1
+route fm-devbox-wsl devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
+```
+
+The profile adds `BatchMode=yes`, `StrictHostKeyChecking=yes`, a 10-second connection and handshake timeout, and two pre-session connection attempts.
+It also pins the workload authentication checks to Microsoft New Zealand Sandbox subscription `82acd5bb-4206-47d4-9c12-a65db028483d`.
+The normal server keepalives still bound detection after connection.
+No command is retried after the fixed remote entrypoint may have started, because replaying a mutation after a dropped tunnel would be unsafe.
+
+### Host-local identity and permission separation
+
+Keep interactive staff sign-in and unattended workload authentication as two separate principals and two separate local profile stores.
+The remote transport itself needs no Microsoft Graph application permission and never copies a token, browser profile, Azure CLI profile, Windows App profile, VS Code profile, or Dev Tunnels credential between the Mac, Windows, and WSL2.
+Microsoft documents `Dev Box User` as the developer role at project scope in [Azure role-based access control in Microsoft Dev Box](https://learn.microsoft.com/azure/dev-box/concept-dev-box-role-based-access-control), private same-account tunnel authentication in [Dev Tunnels security](https://learn.microsoft.com/azure/developer/dev-tunnels/security), and credential-free `az login --identity` in [Azure CLI managed identity authentication](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-managed-identity).
+
+| Plane | Principal and profile | Azure RBAC | App permission or consent |
+| --- | --- | --- | --- |
+| Interactive Dev Box and tunnel administration | A staff user signed in only in the Dev Box's Windows interactive session, with its browser, Windows App, VS Code, and Dev Tunnels profiles stored on that Dev Box | `Dev Box User` at the exact `Microsoft.DevCenter/projects/<project>` resource in subscription `82acd5bb-4206-47d4-9c12-a65db028483d` | Dev Tunnels service sign-in for that user only; Firstmate requires no custom app registration, Microsoft Graph delegated scope, tenant-wide admin consent, or application permission |
+| Unattended Firstmate work in WSL2 | A managed identity when the host exposes one, or a federated workload identity, authenticated only in `~/.config/firstmate/azure-workload` | `Reader` at `/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d` | None for the remote-secondmate transport; a project that calls another API must obtain a separately reviewed least-privilege application assignment rather than reuse staff consent |
+
+Do not use a staff user's default `~/.azure` cache for the unattended worker.
+Do not copy the Mac's Azure CLI directory, browser data, cookies, refresh tokens, Dev Tunnels profile, or SSH agent into the Dev Box.
+Do not expose a Windows UI profile through SSH, a filesystem mount, profile sync, or the tunnel.
+The Mac may authenticate its own local Dev Tunnels client to connect, but that local CLI credential is not the Dev Box's Windows UI profile and is never forwarded to WSL2.
+
+Create `~/.config/firstmate/devbox-auth-matrix.json` inside WSL2 as a credential-free declaration of the two planes.
+Keep the exact fixed values below and replace only the project resource ID, tenant UUID, and workload principal object UUID placeholders.
+The project scope must remain inside the pinned subscription.
+
+```json
+{
+  "schema": "fm-devbox-auth-matrix.v1",
+  "subscription": "82acd5bb-4206-47d4-9c12-a65db028483d",
+  "interactive": {
+    "principalType": "staff-user",
+    "rbac": {
+      "role": "Dev Box User",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d/resourceGroups/<devbox-rg>/providers/Microsoft.DevCenter/projects/<project>"
+    },
+    "delegatedAppPermissions": "dev-tunnels-service-sign-in-only",
+    "uiProfile": "windows-host-local"
+  },
+  "workload": {
+    "principalType": "managed-or-workload-identity",
+    "tenantId": "<tenant-uuid>",
+    "principalObjectId": "<principal-object-uuid>",
+    "rbac": {
+      "role": "Reader",
+      "scope": "/subscriptions/82acd5bb-4206-47d4-9c12-a65db028483d"
+    },
+    "applicationPermissions": "none"
+  }
+}
+```
+
+Authenticate the workload identity into the isolated profile without a client secret.
+Use `AZURE_CONFIG_DIR="$HOME/.config/firstmate/azure-workload" az login --identity` only when managed identity is actually available to WSL2, or use the organization's approved short-lived federated workload flow.
+Never run an interactive staff `az login` into that directory, and never put a client secret, certificate private key, federated token, or access token in the matrix.
+The doctor never logs in, grants a role, or gives consent.
+It validates the matrix, requires the isolated Azure account to report `servicePrincipal`, verifies the pinned subscription and tenant, and uses `az role assignment list --assignee-object-id` to prove the declared principal has an exact `Reader` assignment at the subscription scope without a Microsoft Graph lookup.
+
+### Readiness and lifecycle
+
+Run the normal doctor through the configured route.
+The profile makes it additionally prove that the endpoint is WSL2, systemd is PID 1, `ssh.service` or `sshd.service` is active and enabled, the SSH path reached the fixed entrypoint inside Linux, the credential-free identity matrix matches the pinned subscription, the isolated Azure CLI account is a managed or workload identity, and that principal has the declared subscription Reader assignment.
+
+```sh
+bin/fm-on.sh <secondmate-id> fm-remote-doctor.sh
+```
+
+Those are the Windows-to-WSL and unattended-identity facts visible from the Linux endpoint.
+The doctor cannot inspect or copy the Windows interactive profile, so the operator must verify the staff user's project-level Dev Box User assignment and Dev Tunnels sign-in in that session.
+It also cannot prove the Dev Box pool's stop schedule, Scheduled Task health, Windows or Hyper-V firewall policy, or the future lifetime of the tunnel-host process, so the operator must check those on Windows.
+`--fix` does not install WSL, edit Windows networking, enable sshd, authenticate Azure, grant RBAC, consent an app, create a tunnel, or change Azure lifecycle state.
+
+A stopped or hibernated Dev Box and an unavailable local or remote tunnel both surface as SSH exit 255.
+Firstmate therefore preserves the route and classifies the remote endpoint as unknown, never dead, and never replaces it with a local mate.
+Restore the existing box and tunnel, rerun the doctor, and then reconcile on the same route.
+Do not blindly replay a mutating command whose earlier completion is unknown.
+
+A bounded operator smoke test is to verify the pinned SSH alias reaches `uname -r` in WSL2, run the doctor, provision and launch one disposable remote secondmate home through the normal commands, send one routed request, confirm its reply returns through the parent channel, stop only the primary-side tunnel client, confirm current state becomes unknown rather than dead, reconnect the tunnel, and retire the home through the guarded cleanup path.
+This smoke test does not require provisioning or changing an Azure resource and is the required final proof when an actual Dev Box is available.
+The repository's fixture tests prove configuration parsing, SSH argv construction, WSL-visible diagnostics, and unknown-on-disconnect behavior without claiming a live Dev Box result.
+
 ## Provision a route
 
 Create and fill the normal secondmate charter first, then run:
@@ -213,7 +370,7 @@ The source log is never truncated or consumed.
 A shortened or changed prefix stops the relay and surfaces a continuity failure instead of silently resetting the cursor.
 
 An SSH exit status of 255 always means transport failure or unknown remote completion.
-The underlying `fm-on` transport never retries automatically, but `fm-send` retries its correlation-preserving steering-inbox leg exactly once.
+The underlying `fm-on` transport never replays a remote command; only the explicit Dev Box profile may retry connection setup before a session exists, while `fm-send` retries its correlation-preserving steering-inbox leg exactly once.
 Semantic callers preserve the route or pending request; an operation that is not idempotent requires same-host reconciliation rather than a blind resend, while an unconfirmed steer may be retried only through the correlation-preserving command described above.
 An unavailable remote home is projected as unknown and is never replaced by a local second mate.
 

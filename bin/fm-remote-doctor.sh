@@ -4,6 +4,11 @@
 # Usage:
 #   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix]
 #
+# fm-on.sh automatically adds `--transport-profile devbox-wsl --subscription
+# <uuid>` when the route's primary-local config/remote-transports record selects
+# that profile. The options are internal diagnostic selectors, not a second way
+# to configure a route.
+#
 # Run it through fm-on.sh so the fixed entrypoint invokes this readiness owner
 # over its plain SSH bootstrap. The command reports the same filesystem-composed
 # PATH used by worker jobs while retaining authority to inspect and repair the
@@ -31,6 +36,8 @@
 #   path=<the child PATH this command inherited>
 #   entrypoint=yes|no
 #   platform=darwin|linux|<uname -s>|unknown
+#   transport-profile=devbox-wsl                 (selected profile only)
+#   subscription=<azure-subscription-uuid>        (selected profile only)
 #   required <tool>=<path>|MISSING
 #   optional <tool>=<path>|absent
 #   fix <check>=applied: <what changed>       (--fix only)
@@ -81,20 +88,48 @@ LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
 
-usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 MODE=check
-case "${1:-}" in
-  '') ;;
-  --fix) MODE=fix; shift ;;
-  --worker-tool-probe)
-    [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
-    MODE='worker-tool-probe'
-    shift
-    ;;
-  *) usage ;;
-esac
-[ "$#" -eq 0 ] || usage
+TRANSPORT_PROFILE=ssh
+SUBSCRIPTION=
+PROFILE_SEEN=0
+SUBSCRIPTION_SEEN=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fix)
+      [ "$MODE" = check ] || usage
+      MODE=fix
+      shift
+      ;;
+    --transport-profile)
+      [ "$PROFILE_SEEN" -eq 0 ] && [ "$#" -ge 2 ] || usage
+      [ "$2" = devbox-wsl ] || usage
+      TRANSPORT_PROFILE=$2
+      PROFILE_SEEN=1
+      shift 2
+      ;;
+    --subscription)
+      [ "$SUBSCRIPTION_SEEN" -eq 0 ] && [ "$#" -ge 2 ] || usage
+      SUBSCRIPTION=$2
+      SUBSCRIPTION_SEEN=1
+      shift 2
+      ;;
+    --worker-tool-probe)
+      [ "$MODE" = check ] && [ "$PROFILE_SEEN" -eq 0 ] && [ "$SUBSCRIPTION_SEEN" -eq 0 ] && [ "$#" -eq 1 ] || usage
+      [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
+      MODE='worker-tool-probe'
+      shift
+      ;;
+    *) usage ;;
+  esac
+done
+if [ "$TRANSPORT_PROFILE" = devbox-wsl ]; then
+  [[ "$SUBSCRIPTION" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || usage
+  SUBSCRIPTION=$(printf '%s' "$SUBSCRIPTION" | tr 'A-F' 'a-f')
+else
+  [ -z "$SUBSCRIPTION" ] || usage
+fi
 
 PLATFORM=$(fm_remote_job_platform)
 UID_NUM=$(id -u 2>/dev/null) || UID_NUM=
@@ -718,11 +753,241 @@ check_entrypoint_link() {
     "rerun this command with --fix to create it"
 }
 
+# The route itself proves only prerequisites observable after its SSH stream has
+# landed in Linux. Pool schedules, the Windows Scheduled Task, Hyper-V firewall
+# policy, and the dev-tunnel host process remain operator-owned checks documented
+# in docs/remote-secondmates.md and are deliberately never guessed from here.
+devbox_auth_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+devbox_wsl_skip_downstream() { # <reason>
+  record devbox-wsl-systemd "skip: $1"
+  record devbox-wsl-sshd "skip: $1"
+}
+
+check_devbox_wsl() {
+  local release release_lower pid1 unit='' load_state active enabled
+  [ "$TRANSPORT_PROFILE" = devbox-wsl ] || return 0
+
+  if [ "$PLATFORM" != linux ]; then
+    record devbox-wsl-platform "human: the configured Dev Box route landed on $PLATFORM instead of WSL2 Linux" \
+      "configure the SSH alias to terminate at WSL2's sshd, never at a Windows OpenSSH shell"
+    devbox_wsl_skip_downstream "WSL2 Linux was not reached"
+  else
+    release=$(uname -r 2>/dev/null || true)
+    release_lower=$(printf '%s' "$release" | tr '[:upper:]' '[:lower:]')
+    case "$release_lower" in
+      *microsoft-standard*wsl2*|*microsoft-standard*)
+        record devbox-wsl-platform "ok: WSL2 kernel $release"
+        ;;
+      *microsoft*)
+        record devbox-wsl-platform "human: the Linux endpoint reports Microsoft kernel '$release' but not WSL2" \
+          "install or select a WSL2 distribution and point the SSH alias at that distribution's sshd"
+        devbox_wsl_skip_downstream "WSL2 was not confirmed"
+        ;;
+      *)
+        record devbox-wsl-platform "human: the configured Dev Box profile reached Linux kernel '$release', not a confirmed WSL2 endpoint" \
+          "remove the profile for a normal Linux host, or point this Dev Box alias at WSL2's sshd"
+        devbox_wsl_skip_downstream "WSL2 was not confirmed"
+        ;;
+    esac
+
+    if check_is_ok devbox-wsl-platform; then
+      pid1=$(ps -p 1 -o comm= 2>/dev/null | tr -d '[:space:]' || true)
+      if [ "$pid1" = systemd ] && command -v systemctl >/dev/null 2>&1; then
+        record devbox-wsl-systemd "ok: PID 1 is systemd"
+      else
+        record devbox-wsl-systemd "human: WSL2 is not running systemd as PID 1" \
+          "set [boot] systemd=true in /etc/wsl.conf, run 'wsl.exe --shutdown' from Windows, then restart the distribution"
+      fi
+
+      if check_is_ok devbox-wsl-systemd; then
+        for unit in ssh.service sshd.service; do
+          load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null || true)
+          if [ "$load_state" = loaded ]; then
+            break
+          fi
+          unit=
+        done
+        if [ -z "$unit" ]; then
+          record devbox-wsl-sshd "human: no loaded ssh.service or sshd.service unit is visible in WSL2" \
+            "install the distribution's OpenSSH server package, then enable and start its systemd service"
+        else
+          active=$(systemctl is-active "$unit" 2>/dev/null || true)
+          enabled=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+          if [ "$active" = active ] && [ "$enabled" = enabled ]; then
+            record devbox-wsl-sshd "ok: $unit is active and enabled"
+          else
+            record devbox-wsl-sshd "human: $unit is active=$active and enabled=$enabled" \
+              "enable and start $unit in WSL2 so the endpoint returns after a Dev Box restart"
+          fi
+        fi
+      else
+        record devbox-wsl-sshd "skip: systemd readiness was not confirmed"
+      fi
+    fi
+  fi
+
+  if [ "${FM_REMOTE_DOCTOR_BOOTSTRAP:-}" = 1 ]; then
+    record devbox-wsl-route "ok: the configured SSH route reached Firstmate's fixed entrypoint inside Linux"
+  else
+    record devbox-wsl-route "human: this diagnostic did not arrive through Firstmate's fixed SSH entrypoint" \
+      "run it through 'bin/fm-on.sh <route> fm-remote-doctor.sh' from the primary home"
+  fi
+}
+
+devbox_auth_skip() { # <reason>
+  record devbox-auth-matrix "skip: $1"
+  devbox_auth_skip_downstream "$1"
+}
+
+devbox_auth_skip_downstream() { # <reason>
+  record devbox-auth-interactive "skip: $1"
+  record devbox-auth-workload "skip: $1"
+  record devbox-auth-rbac "skip: $1"
+  record devbox-auth-app-permissions "skip: $1"
+}
+
+check_devbox_auth() {
+  local matrix_dir matrix links bytes valid account azure_dir tenant principal project_scope workload_scope
+  local account_id account_tenant account_type assignments devbox_auth_skip_after_matrix
+  [ "$TRANSPORT_PROFILE" = devbox-wsl ] || return 0
+  if ! check_is_ok devbox-wsl-platform; then
+    devbox_auth_skip "WSL2 was not confirmed"
+    return 0
+  fi
+
+  matrix_dir="${HOME:-}/.config/firstmate"
+  matrix="$matrix_dir/devbox-auth-matrix.json"
+  if [ -L "${HOME:-}/.config" ] || [ -L "$matrix_dir" ] || [ -L "$matrix" ] \
+    || [ ! -d "$matrix_dir" ] || [ ! -f "$matrix" ]; then
+    record devbox-auth-matrix "human: no safe host-local authentication matrix exists at $matrix" \
+      "create the credential-free matrix documented in docs/remote-secondmates.md on the WSL2 host"
+    devbox_auth_skip_after_matrix=1
+  else
+    devbox_auth_skip_after_matrix=0
+  fi
+  if [ "$devbox_auth_skip_after_matrix" -eq 0 ]; then
+    links=$(if [ "$(uname -s)" = Darwin ]; then /usr/bin/stat -f %l "$matrix" 2>/dev/null; else stat -c %h "$matrix" 2>/dev/null; fi) || links=
+    bytes=$(LC_ALL=C wc -c < "$matrix" 2>/dev/null | tr -d ' ' || true)
+    if [ "$links" != 1 ]; then
+      record devbox-auth-matrix "human: $matrix is hardlinked or its link count is unreadable" \
+        "replace it with one regular single-linked host-local file"
+      devbox_auth_skip_after_matrix=1
+    elif case "$bytes" in ''|*[!0-9]*) true ;; *) [ "$bytes" -gt 16384 ] ;; esac; then
+      record devbox-auth-matrix "human: $matrix is unreadable or exceeds the 16384-byte bound" \
+        "replace it with the bounded credential-free matrix documented in docs/remote-secondmates.md"
+      devbox_auth_skip_after_matrix=1
+    fi
+  fi
+  if [ "$devbox_auth_skip_after_matrix" -eq 0 ]; then
+    valid=$(jq -e '
+      type == "object"
+      and (keys | sort) == ["interactive", "schema", "subscription", "workload"]
+      and .schema == "fm-devbox-auth-matrix.v1"
+      and (.subscription | type == "string")
+      and (.interactive | type == "object")
+      and (.interactive | keys | sort) == ["delegatedAppPermissions", "principalType", "rbac", "uiProfile"]
+      and .interactive.principalType == "staff-user"
+      and .interactive.delegatedAppPermissions == "dev-tunnels-service-sign-in-only"
+      and .interactive.uiProfile == "windows-host-local"
+      and (.interactive.rbac | type == "object")
+      and (.interactive.rbac | keys | sort) == ["role", "scope"]
+      and .interactive.rbac.role == "Dev Box User"
+      and (.interactive.rbac.scope | type == "string")
+      and (.workload | type == "object")
+      and (.workload | keys | sort) == ["applicationPermissions", "principalObjectId", "principalType", "rbac", "tenantId"]
+      and .workload.principalType == "managed-or-workload-identity"
+      and .workload.applicationPermissions == "none"
+      and (.workload.principalObjectId | type == "string")
+      and (.workload.tenantId | type == "string")
+      and (.workload.rbac | type == "object")
+      and (.workload.rbac | keys | sort) == ["role", "scope"]
+      and .workload.rbac.role == "Reader"
+      and (.workload.rbac.scope | type == "string")
+    ' "$matrix" 2>/dev/null || true)
+    if [ "$valid" != true ]; then
+      record devbox-auth-matrix "human: $matrix does not match schema fm-devbox-auth-matrix.v1" \
+        "replace it with the exact credential-free matrix documented in docs/remote-secondmates.md"
+      devbox_auth_skip_after_matrix=1
+    fi
+  fi
+  if [ "$devbox_auth_skip_after_matrix" -ne 0 ]; then
+    devbox_auth_skip_downstream "the authentication matrix is not valid"
+    return 0
+  fi
+
+  tenant=$(jq -r '.workload.tenantId' "$matrix")
+  principal=$(jq -r '.workload.principalObjectId' "$matrix")
+  project_scope=$(jq -r '.interactive.rbac.scope' "$matrix")
+  workload_scope=$(jq -r '.workload.rbac.scope' "$matrix")
+  if [ "$(jq -r '.subscription' "$matrix" | tr 'A-F' 'a-f')" != "$SUBSCRIPTION" ] \
+    || ! devbox_auth_uuid "$tenant" || ! devbox_auth_uuid "$principal" \
+    || [ "$workload_scope" != "/subscriptions/$SUBSCRIPTION" ]; then
+    record devbox-auth-matrix "human: $matrix does not bind its tenant, workload principal, Reader scope, and configured subscription safely" \
+      "correct the UUIDs and bind workload Reader to /subscriptions/$SUBSCRIPTION"
+    devbox_auth_skip_downstream "the authentication matrix binding is invalid"
+    return 0
+  fi
+  case "$project_scope" in
+    "/subscriptions/$SUBSCRIPTION/resourceGroups/"?*"/providers/Microsoft.DevCenter/projects/"?*) ;;
+    *)
+      record devbox-auth-matrix "human: the interactive Dev Box User scope is not a project in subscription $SUBSCRIPTION" \
+        "set interactive.rbac.scope to the exact Microsoft.DevCenter project resource ID"
+      devbox_auth_skip_downstream "the authentication matrix binding is invalid"
+      return 0
+      ;;
+  esac
+  case "$project_scope" in *$'\t'*|*$'\n'*|*$'\r'*|*'//'*|*'/../'*|*'/./'*)
+    record devbox-auth-matrix "human: the interactive Dev Box project scope contains unsafe delimiters" \
+      "set interactive.rbac.scope to one normalized Azure resource ID"
+    devbox_auth_skip_downstream "the authentication matrix binding is invalid"
+    return 0
+    ;;
+  esac
+  record devbox-auth-matrix "ok: the host-local identity and permission matrix is valid for subscription $SUBSCRIPTION"
+  record devbox-auth-interactive "ok: staff sign-in is limited to Dev Box User on $project_scope with a Windows-host-local UI profile"
+  record devbox-auth-app-permissions "ok: interactive consent is Dev Tunnels service sign-in only and the workload identity has no application permissions"
+
+  azure_dir="$matrix_dir/azure-workload"
+  if [ -L "$azure_dir" ] || [ ! -d "$azure_dir" ] || ! command -v az >/dev/null 2>&1; then
+    record devbox-auth-workload "human: the isolated workload Azure CLI profile or az is unavailable" \
+      "authenticate a managed or federated workload identity in $azure_dir without copying a staff profile or credential"
+    record devbox-auth-rbac "skip: the workload identity could not be authenticated"
+    return 0
+  fi
+  account=$(AZURE_CONFIG_DIR="$azure_dir" az account show --subscription "$SUBSCRIPTION" --only-show-errors --output json 2>/dev/null || true)
+  account_id=$(printf '%s' "$account" | jq -r '.id // ""' 2>/dev/null | tr 'A-F' 'a-f')
+  account_tenant=$(printf '%s' "$account" | jq -r '.tenantId // ""' 2>/dev/null | tr 'A-F' 'a-f')
+  account_type=$(printf '%s' "$account" | jq -r '.user.type // ""' 2>/dev/null)
+  if [ "$account_id" != "$SUBSCRIPTION" ] || [ "$account_tenant" != "$(printf '%s' "$tenant" | tr 'A-F' 'a-f')" ] \
+    || [ "$account_type" != servicePrincipal ]; then
+    record devbox-auth-workload "human: the isolated Azure CLI profile is not the declared managed or workload identity on subscription $SUBSCRIPTION" \
+      "authenticate the declared identity in $azure_dir; never copy or reuse the interactive staff profile"
+    record devbox-auth-rbac "skip: the workload identity could not be authenticated"
+    return 0
+  fi
+  record devbox-auth-workload "ok: isolated service-principal context targets subscription $SUBSCRIPTION and tenant $account_tenant"
+
+  assignments=$(AZURE_CONFIG_DIR="$azure_dir" az role assignment list --assignee-object-id "$principal" \
+    --scope "$workload_scope" --include-inherited --all --only-show-errors --output json 2>/dev/null || true)
+  if printf '%s' "$assignments" | jq -e --arg scope "$workload_scope" \
+    'type == "array" and any(.[]; .roleDefinitionName == "Reader" and .scope == $scope)' >/dev/null 2>&1; then
+    record devbox-auth-rbac "ok: workload principal $principal has Reader at $workload_scope"
+  else
+    record devbox-auth-rbac "human: workload principal $principal does not have the declared Reader assignment at $workload_scope" \
+      "grant only the documented Reader role at that subscription scope, then rerun the doctor"
+  fi
+}
+
 run_checks() { # <resolved-login-shell>
   local shell=$1
   CHECK_NAMES=()
   CHECK_VALUES=()
   CHECK_ACTIONS=()
+  check_devbox_wsl
+  check_devbox_auth
   check_herdr
   check_gui_session
   check_remote_job_worker
@@ -894,6 +1159,10 @@ else
   printf 'note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.\n' >&2
 fi
 printf 'platform=%s\n' "$PLATFORM"
+if [ "$TRANSPORT_PROFILE" != ssh ]; then
+  printf 'transport-profile=%s\n' "$TRANSPORT_PROFILE"
+  printf 'subscription=%s\n' "$SUBSCRIPTION"
+fi
 
 LAUNCH_AGENT_SHELL=
 if [ "$PLATFORM" = darwin ]; then

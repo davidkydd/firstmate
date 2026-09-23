@@ -273,6 +273,29 @@ Use `fm-home-seed.sh validate` to check the complete operational registry contra
 The main first mate routes by reading those scopes with judgment; the project list is provisioning data, not exclusive ownership.
 Use `fm-home-seed.sh <id> - {<project>...|--no-projects}` to lease a fresh local firstmate worktree for the secondmate home.
 For remote provisioning, including supplied project origins, follow [Remote second mates](remote-secondmates.md#provision-a-route).
+
+### Remote transport profiles (config/remote-transports)
+
+`config/remote-transports` is an optional primary-local transport-profile map keyed by the SSH alias already stored in a remote secondmate route.
+It does not change `data/secondmates.md`, contain endpoint or credential fields, or replace OpenSSH configuration.
+It is not inherited into secondmate homes because it describes how this primary machine reaches another host.
+When the file is absent, every remote route keeps the existing generic SSH behavior.
+
+The first line must be the exact schema marker below.
+Each later nonblank, noncomment line binds one SSH alias to the only current profile, `devbox-wsl`, and pins one canonical Azure subscription UUID for that host's workload identity.
+Aliases use the same `[A-Za-z0-9._-]+` grammar as remote route records, each alias may appear once, and the file may contain at most 128 routes and 65,536 bytes.
+Unknown records, extra fields, symlinks, hard links, special files, unsafe aliases, and malformed schema markers are rejected before SSH starts.
+
+```text
+schema=fm-remote-transports.v1
+route fm-devbox-wsl devbox-wsl subscription=82acd5bb-4206-47d4-9c12-a65db028483d
+```
+
+The `devbox-wsl` profile keeps the route's SSH alias as the destination, passes the validated subscription only to the fixed readiness command, and adds fixed noninteractive authentication, strict host-key checking, a 10-second connection and handshake timeout, and two connection attempts before a session starts.
+It never retries after the fixed remote entrypoint may have started, so an interrupted mutation still has unknown completion and requires same-host reconciliation.
+The profile also selects the WSL2-specific checks in `fm-remote-doctor.sh`.
+[`remote-secondmates.md`](remote-secondmates.md#azure-dev-box-with-wsl2) owns the one-time Windows, WSL2, SSH, and tunnel setup.
+
 Use the deliberate `--no-projects` signal only for a firstmate-repo domain that needs no separate project clones.
 It cannot be combined with a project list, and omitting both still fails loudly.
 A project-less seed requires no existing project clones or `data/projects.md` entries in the home, so it refuses a populated-home conversion without changing that home.

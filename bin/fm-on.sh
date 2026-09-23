@@ -15,15 +15,24 @@
 # because remote staging captures stdin to EOF and an open caller stream would
 # block staging indefinitely; a payload caller passes --stdin to forward its
 # own stream as the job's bounded input. stdout and stderr remain separate, and
-# ssh's exit status is returned unchanged. OpenSSH never receives an auto-retry
-# instruction here. Exit 255 therefore means unavailable transport or unknown
-# remote completion and must be reconciled by the semantic caller, never
-# blindly repeated by this layer.
+# ssh's exit status is returned unchanged. Generic routes never receive a retry
+# instruction here; the explicit Dev Box profile permits only bounded connection
+# attempts before a session starts. Exit 255 therefore means unavailable
+# transport or unknown remote completion and must be reconciled by the semantic
+# caller, never blindly repeated by this layer.
 #
 # The SSH alias keeps normal public-key and strict host-key policy in ~/.ssh.
 # This command explicitly disables agent forwarding, forwarding setup, and
 # configured SendEnv patterns. The remote entrypoint executes the selected
 # command under an empty environment with only its fixed runtime values.
+#
+# An optional config/remote-transports file may select the devbox-wsl profile
+# for an SSH alias and pin its Azure subscription UUID. The alias still owns
+# the stable forwarded endpoint and all identity fields. The profile adds fixed BatchMode/strict-host-key settings, a
+# 10-second connect/handshake timeout, and two pre-session connection attempts.
+# It never retries after a session may have started, because that could replay a
+# remote mutation whose completion is unknown. Routes absent from the file keep
+# the generic SSH argv unchanged.
 #
 # ServerAliveInterval/ServerAliveCountMax arm dead-peer detection so a vanished
 # peer (a reboot, a dropped link) becomes a bounded ssh failure (exit 255)
@@ -38,11 +47,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 REG="$DATA/secondmates.md"
 PROTOCOL=1
 
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-remote-transport-lib.sh
+. "$SCRIPT_DIR/fm-remote-transport-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -100,9 +112,20 @@ for configured_path in "$ROOT" "$HOME_PATH"; do
   case "$configured_path" in *'//'*) die "configured remote root or home contains an empty path component" ;; esac
 done
 
+fm_remote_transport_config_load "$CONFIG" "$HOST" \
+  || die "invalid remote transport configuration: $FM_REMOTE_TRANSPORT_ERROR"
+COMMAND_ARGS=("$@")
+if [ "$COMMAND" = fm-remote-doctor.sh ] && [ "$FM_REMOTE_TRANSPORT_PROFILE" = devbox-wsl ]; then
+  for arg in "${COMMAND_ARGS[@]+"${COMMAND_ARGS[@]}"}"; do
+    [ "$arg" != --transport-profile ] \
+      || die "--transport-profile is selected by config/remote-transports and cannot be passed directly"
+  done
+  COMMAND_ARGS+=(--transport-profile devbox-wsl --subscription "$FM_REMOTE_TRANSPORT_SUBSCRIPTION")
+fi
+
 ROOT_B64=$(printf '%s' "$ROOT" | encode_base64)
 HOME_B64=$(printf '%s' "$HOME_PATH" | encode_base64)
-ARGV_B64=$(printf '%s\0' "$COMMAND" "$@" | encode_base64)
+ARGV_B64=$(printf '%s\0' "$COMMAND" "${COMMAND_ARGS[@]+"${COMMAND_ARGS[@]}"}" | encode_base64)
 SSH_BIN=${FM_SSH_BIN:-ssh}
 ALIVE_INTERVAL=${FM_SSH_ALIVE_INTERVAL:-15}
 ALIVE_COUNT_MAX=${FM_SSH_ALIVE_COUNT_MAX:-3}
@@ -117,8 +140,16 @@ SSH_ARGS=(
   -o 'SendEnv=-*'
   -o "ServerAliveInterval=$ALIVE_INTERVAL"
   -o "ServerAliveCountMax=$ALIVE_COUNT_MAX"
-  -- "$HOST" fm-remote-entrypoint.sh "$PROTOCOL" "$ROOT_B64" "$HOME_B64" "$ARGV_B64"
 )
+if [ "$FM_REMOTE_TRANSPORT_PROFILE" = devbox-wsl ]; then
+  SSH_ARGS+=(
+    -o BatchMode=yes
+    -o StrictHostKeyChecking=yes
+    -o "ConnectTimeout=$FM_REMOTE_TRANSPORT_DEVBOX_CONNECT_TIMEOUT"
+    -o "ConnectionAttempts=$FM_REMOTE_TRANSPORT_DEVBOX_CONNECTION_ATTEMPTS"
+  )
+fi
+SSH_ARGS+=(-- "$HOST" fm-remote-entrypoint.sh "$PROTOCOL" "$ROOT_B64" "$HOME_B64" "$ARGV_B64")
 if [ "$STDIN_MODE" = caller ]; then
   exec "$SSH_BIN" "${SSH_ARGS[@]}"
 fi
